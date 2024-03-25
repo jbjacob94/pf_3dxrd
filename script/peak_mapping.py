@@ -1,0 +1,315 @@
+import os, sys, copy, h5py
+import numpy as np
+import pylab as pl
+from tqdm import tqdm
+
+import ImageD11.columnfile, ImageD11.grain, ImageD11.refinegrains, ImageD11.sym_u, ImageD11.cImageD11
+import xfab
+from orix import quaternion as oq
+
+from pf_3dxrd import utils, crystal_structure, pixelmap
+
+
+
+
+""" 
+Peaks to 2D pixel-grid and peaks to grains mapping. Includes functions for:
+- peak-to-pixel mapping and and peak selection by pixel, 
+- peak-to-grain mapping and grain ubi refinment
+
+Peakfile should contain a xyi column, which gives information on peak (xs,ys) position in the sample (pixel index) inferred from Friedel pairs
+"""
+
+
+# Peak mapping on a 2D pixel grid and peak selection by pixel index
+###########################################################################
+
+def xyi(xi, yi):
+    """ 
+    Defines unique pixel labels based on xi and yi pixel coordinates. xyi = xi + 10000 * yi. Only works if the map is less than 10000 px wide"""
+    return int(xi+10000*yi)
+
+
+def xyi_inv(xyi):
+    """ return (xi,yi) pixel coordinates from a xyi label"""
+    xi = xyi % 10000
+    yi = xyi // 10000
+    return xi, yi
+
+
+def add_pixel_labels(cf, ds):
+    """
+    Use (xs,ys) peak coordinates retrieved with Friedel pairs to assign each peak to a pixel on a 2D grid.
+    Add columns xi, yi and xyi to columnfile, where (xi,yi) are pixel coordinates of the peak on the grid and xyi is a unique pixel label defined as xyi = xi + 10000.yi (good as long as the map is not larger than 10000 px)
+    
+    Args:
+    -------
+    cf : ImageD11 columnfile, must contain xs, ys columns giving peak coordinates in sample frame
+    ds : ImageD11 dataset for binning
+    """
+    # x,y bins
+    xb, yb = ds.ybinedges, ds.ybinedges
+    # xi, yi: pixel coord label for each peak
+    xi = np.round(((cf.xs - ds.ybinedges[0])/ds.ystep)).astype(np.uint32)
+    yi = np.round(((cf.ys - ds.ybinedges[0])/ds.ystep)).astype(np.uint32)
+
+    cf.addcolumn( xi, 'xi' )
+    cf.addcolumn( yi, 'yi')
+    xyi = np.array(xi + yi * 10000, dtype=int)  # do not use np.unit32, for some reasons it is 100x slower when running np.searchsorted
+    cf.addcolumn( xyi, 'xyi')
+    cf.sortby('xyi')
+    
+    
+def sorted_xyi_inds(cf, is_sorted=False):
+    """ 
+    run np.searchsorted on sorted xyi column in cf for all unique values in this column. This returns the list of first index positions (inds) of each unique xyi value. The highest index in cf.xyi is appened to inds for selection of the highest xyi index
+    e.g: xyi = [0,0,0,1,1,2,3,3,4,4,4] -> inds = [0,3,5,6,8,10]. This allows to quickly find all peaks which have the same xyi value in cf (ie all peaks from the same pixel), which are between positions inds[i] and inds[i+1] in the sorted xyi array
+    
+    Args: 
+    --------
+    cf : imageD11 columnfile, with xyi column
+    is_sorted (bool) : indicates whether cf has been sorted by xyi indices (required). Default is False
+    
+    Returns:
+    --------
+    xyi_uniq (np.array): unique xyi indices in cf.xyi
+    inds (np.array): first index position of each unique value xyi_uniq in cf.xyi 
+    """
+    
+    assert 'xyi' in cf.titles, 'xyi has not been computed. Run add_pixel_labels first'
+    
+    if not is_sorted:
+        cf.sortby('xyi')
+    
+    xyi_uniq = np.unique(cf.xyi).tolist()
+    inds = np.searchsorted(cf.xyi, xyi_uniq)
+    inds = np.append(inds, cf.nrows)  
+    return xyi_uniq, inds
+
+
+
+def pks_inds(sorted_xyi_array, xyi_list, check_list = False):
+    """
+    find all peaks belonging to a list of pixels, defined by their xyi index 
+    
+    Args:
+    -------
+    sorted_xyi_array : array of sorted xyi indices in peakfile. (e.g cf.xyi)
+    xyi_list : list of xyi indices for pixels to search
+    check_list : check whether list of provided xyi indices is correct (slower). Default is False
+    
+    Returns:
+    ---------
+    pks : array of index positions in cf for all peaks in pixel selection
+    """
+    if check_list:
+        xyi_uniq = np.unique(sorted_xyi_array)
+        assert all([xyi in xyi_uniq for xyi in xyi_list]), 'some pixels in xyi_list not found in sorted_xyi_array'
+    
+    return np.concatenate([pks_from_px(sorted_xyi_array, xy0, kernel_size=1) for xy0 in xyi_list])
+
+  
+    
+    
+def pks_from_px(sorted_xyi_array, xy0, kernel_size=1):
+    """ select all peaks from a pixel using xyi indices in cf. Allows selection of peaks within a n x n kernel around the pixel
+    
+    Args:
+    ---------
+    sorted_xyi_array : array of sorted xyi indices in peakfile. (e.g cf.xyi)
+    xy0  (int)       : pixel xyi index
+    kernel_size (int) : kernel size for peak selection arround the central pixel. must be an odd integer. default is 1: Only peaks from central pixel are selected
+    
+    Returns: 
+    ---------
+    pks : array of index positions in cf for all peaks in selection
+    """
+    # find index positions to pass to np.searchosrted
+    xy0 = int(xy0)
+    if kernel_size == 1:
+        searchsort_inds =  [(xy0,xy0+1)]
+    
+    else:
+        n = kernel_size // 2
+        xp, yp = xy0%10000, xy0//10000
+        searchsort_inds = [ (xi+10000*yi, xi+10000*yi+1) for yi in range(yp-n, yp+n+1) for xi in range(xp-n,xp+n+1) ]
+    
+    bounds = [np.searchsorted(sorted_xyi_array, inds) for inds in searchsort_inds]  # pks indices boundaries in sorted xyi array
+    pks = np.concatenate([np.arange(b[0],b[1]) for b in bounds])             # full pks array
+    return pks
+
+    
+# Peaks to grain / grain to peaks mapping
+###########################################################################
+    
+def pks_from_grain(cf, g, is_cf_sorted = False, check_px_inds=False):
+    """find peak indices corresponding to a grain g in a columnfile cf
+    Args:
+    ---------
+    cf : columnfile sorted by xyi index
+    g  : grain, must contain a property xyi_indx providing the list of xyi indices over which the grain mask extends
+    is_cf_sorted : bool flag indicating whether cf has been sorted by xyi indices
+    check_px_inds: check whether all xyi indices in g.xyi_indx are present in cf (slow). Default is False
+
+
+    Returns :
+    ---------
+    pks: list of peak indices in cf corresponding to grain g"""
+    
+    assert 'xyi_indx' in dir(g)
+    
+    if not is_cf_sorted:
+        cf.sortby('xyi')
+    
+   
+    return pks_inds(cf.xyi, g.xyi_indx, check_list = check_px_inds)
+
+   
+
+def map_grains_to_cf(glist, cf, overwrite=False):
+    """ find peak indices in peakfile for a list of grains and map grains to peakfile / peaks to grains: 
+    - add grain_id column to peakfile
+    - add peaks index (pksindx) as a new property to all grains in the list
+    
+    Args: 
+    --------
+    glist : list of ImageD1 grains. Should have xyi_indx property corresponding to the grain mask on the pixel grid
+    cf    : ImageD11 columnfile (peakfile), with xyi column
+    overwrite : if True, reset grain_id column in peakfile. default if False
+    """
+        
+    if 'grain_id' not in cf.titles or overwrite:
+        cf.addcolumn(np.full(cf.nrows, -1, dtype=np.int16), 'grain_id')
+
+    for g in tqdm(glist):
+        assert hasattr(g, 'gid'), 'grain missing label'
+        assert hasattr(g, 'xyi_indx'), 'grain missing pixel mask (xyi_indx)'
+
+        gid = g.__getattribute__('gid')
+        
+        pksindx = pks_from_grain(cf, g, is_cf_sorted = True, check_px_inds=False)  # get peaks from grain g
+        
+        # map grain to cf and pks to grain
+        cf.grain_id[pksindx] = gid
+        g.pksindx = pksindx
+                
+    print('completed')  
+ 
+
+               
+# grain refinement
+###########################################################################
+               
+    
+def refine_grains(glist, cf, hkl_tol, nmedian= np.inf, sym = None, return_stats=True):
+    """ Refine peaks_to_grain assignement and fit ubis
+    
+    - dodgy peaks are removed (drlv*drlv > hkl_tol)
+    - fit outliers are removed abs(median err) > nmedian
+    - peaks to grain labeling (g.pksindx) updated
+    
+    Peaks slection using g.pksindx. If no attribute "pksindx" is found for the grain, run function "map_grain_to_cf" in Pixelmap
+    
+    Args:
+    -------
+    glist : list of ImageD11 grains to be refined
+    cf : ImageD11 columnfile sorted by xyi indices
+    hkl_tol : hkl tolerance for peaks
+    nmedian : threshold to remove outliers ( abs(median err) > nmedian ). Default is inf: no outliers removed
+    sym : crystal symmetry (orix.quaternion.symmetry.Symmetry object). used to evaluate misorientation between old and new orientation. 
+    return_stats: returns list of rotation (angle between old and new crystal orientation) + fraction of peaks retained. Default is True
+    """
+
+    prop_indx, ang_dev = [], []
+    
+    for g in tqdm(glist):
+        assert 'pksindx' in dir(g), 'grain has not attribute "pksindx"'
+    
+        gv = np.transpose([cf.gx[g.pksindx], cf.gy[g.pksindx], cf.gz[g.pksindx]]).copy() 
+        N0 = len(gv)  # initial peak number
+        ubi = g.ubi.copy() # keep a copy of old ubi
+        
+        # refine grain ubis
+        for i in range(3):
+            # compute hkl and drlv for each peak
+            hkl = np.dot(g.ubi, gv.T)
+            hkli = np.round( hkl )
+            # Error on these:
+            drlv = hkli - hkl
+            drlv2 = (drlv*drlv).sum(axis=0)
+    
+            # filter out dodgy peaks
+            ret = drlv2 < hkl_tol*hkl_tol
+            g.pksindx = g.pksindx[ret]
+    
+            #remove outliers
+            update_mask(g, cf, cf.parameters, nmedian)
+    
+            #fit orientation with clean peaks only
+            gv = np.transpose([cf.gx[g.pksindx], cf.gy[g.pksindx], cf.gz[g.pksindx]])
+            ImageD11.cImageD11.score_and_refine(g.ubi, gv, tol=1)  # set large hkltol to take all peaks in g.pksindx
+            
+    
+        # compute rotation angle between former and new ubi + prop of peaks retained
+        o = oq.Orientation.from_matrix(g.U, symmetry =sym)  # old orientation
+        o2 = oq.Orientation.from_matrix( xfab.tools.ubi_to_u(ubi), symmetry = sym) # new orientation 
+        
+        ang_dev.append( o2.angle_with(o, degrees=True)[0] )
+        prop_indx.append( len(g.pksindx) / N0)
+        
+        
+    if return_stats:
+        return prop_indx, ang_dev
+    
+
+    
+def update_mask( g, cf, pars, nmedian ):
+    """
+    Remove nmedian*median_error outliers from grains assigned peaks. Modified from s3dxrd.peak_mapper 
+    (https://github.com/FABLE-3DXRD/scanning-xray-diffraction)
+    """
+    # obs data for this grain
+    tthobs = cf.tthc[g.pksindx]
+    etaobs = cf.eta[g.pksindx]
+    omegaobs = cf.omega[g.pksindx]
+    gobs = np.array( (cf.gx[g.pksindx], cf.gy[g.pksindx], cf.gz[g.pksindx]) )
+    # hkls for these peaks
+    hklr = np.dot( g.ubi, gobs )
+    hkl  = np.round( hklr )
+    # Now get the computed tth, eta, omega
+    etasigns = np.sign( etaobs )
+    g.hkl = hkl.astype(int)
+    g.etasigns = etasigns
+    ub = np.linalg.inv(g.ubi)
+    tthcalc, etacalc, omegacalc = calc_tth_eta_omega( ub, hkl, pars, etasigns )
+    # update mask on outliers
+    dtth = (tthcalc - tthobs)
+    deta = (etacalc - etaobs)
+    domega = (omegacalc%360 - omegaobs%360)
+    ret  = abs( dtth ) <= np.median( abs( dtth   ) ) * nmedian
+    ret &= abs( deta ) <= np.median( abs( deta   ) ) * nmedian
+    ret &= abs( domega)<= np.median( abs( domega ) ) * nmedian
+    g.pksindx = g.pksindx[ret]
+    g.hkl = g.hkl[:,ret]
+    return 
+
+               
+
+def calc_tth_eta_omega( ub, hkls, pars, etasigns):
+    """
+    Predict the tth, eta, omega for each grain. Copied from s3dxrd.peak_mapper (https://github.com/FABLE-3DXRD/scanning-xray-diffraction)
+    ub = ub matrix (inverse ubi)
+    hkls = peaks to predict
+    pars = diffractometer info (wavelength, rotation axis)
+    etasigns = which solution for omega/eta to choose (+y or -y)
+    """
+    gvecs = np.dot(ub, hkls)
+
+    tthcalc, eta2, omega2 = ImageD11.transform.uncompute_g_vectors(gvecs,  pars.get('wavelength'),
+                                                            wedge=pars.get('wedge'),
+                                                            chi=pars.get('chi'))
+    # choose which solution (eta+ or eta-)
+    e0 = np.sign(eta2[0]) == etasigns
+    etacalc = np.where(e0, eta2[0], eta2[1])
+    omegacalc = np.where(e0, omega2[0], omega2[1])
+    return tthcalc, etacalc, omegacalc   

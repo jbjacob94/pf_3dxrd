@@ -839,85 +839,73 @@ class Pixelmap:
             
     
     
-    def plot_ipf_map(self, dname, phase, ipfdir = [0,0,1], ellipsoid = False,
-                     smooth = False, sigma = 1, save=False, out=False, **kwargs):
-        """ plot inverse pole figure orientation color map (using orix)
+    
+    def plot_ipf_map(self, phase, dname='U',ipfdir = [0,0,1], ellipsoid = False, save=False, hide_cbar=False, out=False, **kwargs):
+        """ Plot inverse pole figure color map of orientation 
         
         Args:
-        ---------
+        --------
         phase (str): name of the phase to plot. must be in self.phases
-        ipfdir (arr): direction for the ipf colorkey in the laboratory reference frame. must be a 3x1 vector [x,y,z]. Default: z-vector [0,0,1]
-        ellipsoid (bool) : set symmetry to ne of a triaxial ellipsoid (orthorombic, mmm). needed to plot strain stress principal components
-        smooth (bool) : apply gaussian filter for smoothing plot (Experimental...)
-        mf_size (int) : size of median filter kernel for smoothing. default is 1 
-        out: return figure"""
-        
-        # select phase properties
+        dname (str) : name of orientation data array. Default is 'U'. Must be a ndarray with shape (N,3)
+        ipfdir (array): direction for the ipf colorkey in the laboratory reference frame. must be a 3x1 vector [x,y,z]. Default: z-vector [0,0,1]
+        ellipsoid (bool) : set symmetry to one of a triaxial ellipsoid (orthorombic, mmm). For ipf color map of strain stress principal components orientation
+        save (bool) : save plot (default is False)
+        hide_cbar (bool) : hide colorbar from plot (delault is False)
+        out (bool) : return figure as output (default is False)
+        kwargs (dict) : keyword arguments passed to matplotlib"""
+    
         assert phase in self.phases.pnames
-        cs = self.phases.get(phase)
-        cs.str_diffpy.title = cs.name
         
+        #map grid
+        nx, ny = self.grid.nx, self.grid.ny
+        xb, yb = self.grid.xbins, self.grid.ybins
+    
+        # phase symmetry + color key
+        cs =  self.phases.get(phase)
         if ellipsoid:
             sym = oq.symmetry.D2h
+            ipf_key = opl.IPFColorKeyTSL(sym, direction=ovec.Vector3d(ipfdir))
         else:
             sym = cs.orix_phase.point_group.laue
-        ipf_key = opl.IPFColorKeyTSL(sym, direction=ovec.Vector3d(ipfdir))
-        
-        #convert matrix orientation to quaternions
+            cs.get_ipfkey(direction = ovec.Vector3d(ipfdir))
+            ipf_key = cs.ipfkey
+            
+        # convert orientation data to color map
         U = self.get(dname)
         ori = oq.Orientation.from_matrix(U, symmetry=sym)
-        
-        # select phase id
-        phase_id = np.where(self.phase_id==cs.phase_id, cs.phase_id,-1)
-        
-        # orix crystal map
-        orix_map = ocm.CrystalMap(rotations = ori,
-                      phase_id = phase_id,
-                      x = self.xi,
-                      y = self.yi,
-                      phase_list = ocm.PhaseList(space_groups=[cs.spg_no],
-                                                 structures=[cs.str_diffpy]),
-                      scan_unit = self.grid.pixel_unit)
-        if ellipsoid:
-            orix_map.phase_list = ocm.PhaseList(space_groups=[47], structures=[])
-        
-        # select orientations to plot
-        o = orix_map[phase].orientations
-        rgb = ipf_key.orientation2color(o)
-        
-        if smooth:
-            rgb = ndi.gaussian_filter(rgb, sigma=sigma)
-        
-        # plot ipf map
-        pl.matplotlib.rcParams.update({'font.size': 10})
+        rgb = ipf_key.orientation2color(ori)
+        m  = self.phase_id == cs.phase_id
+        indx = self.nindx > 0
+        rgb[~m,:] = 0 # black pixels for phases other than the one selected
+        rgb[~indx,:] = 0  # keep unindexed pixels black
+
+        # plot orientation map 
         fig = pl.figure(figsize=(8,8))
-
-        ax0=fig.add_subplot(111, aspect='equal', projection='plot_map')
-        ax0.set_axis_off()
+        ax = fig.add_subplot(111, aspect ='equal')
+        ax.set_axis_off()
         
-        ax0.plot_map(orix_map[phase], rgb, scalebar=False, **kwargs)
-        ax0.title.set_text(phase+' - ipf map '+str(ipfdir))
-
+        im = ax.pcolormesh(xb, yb, rgb.reshape(nx,ny,3), **kwargs)
+        ax.set_title(f'{phase} - ipf map {str(ipfdir)}')
+        ax.add_artist(self.grid.scalebar())
+    
         # plot color key
         pl.matplotlib.rcParams.update({'font.size': 4})
-        fig.subplots_adjust(right=0.75)
+        fig.subplots_adjust(right=0.7)
         ax1 = fig.add_axes([0.8, 0.25, 0.15, 0.15], projection='ipf',  symmetry=sym)
         ax1.plot_ipf_color_key(show_title=False)
-
-        dsname = self.h5name.split('/')[-1].split('.h')[0]
+        pl.matplotlib.rcParams.update({'font.size': 10})
+            
         
+        fig.suptitle(self.h5name.split('/')[-1].split('.h')[0], y=.9)    
+    
         if save:
             ipfd_str = ''.join(map(str, ipfdir))
-            fname = self.h5name.replace('.h5', '_'+phase+'_ipf_'+ipfd_str+'.pdf')
-            fig.savefig(fname, format='pdf', dpi=300)
-
-        pl.matplotlib.rcParams.update({'font.size': 10})
-        fig.suptitle(dsname, y=0.9)
-        
+            fname = self.h5name.replace('.h5', f'_{phase}_ipf_{ipfd_str}.png')
+            fig.savefig(fname, format='png', dpi = 300) 
         if out:
             return fig
-        
-
+    
+    
             
     def save_to_hdf5(self, h5name=None, save_mode='minimal', debug=0):
         """ 

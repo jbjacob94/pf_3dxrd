@@ -1,6 +1,7 @@
 import os, sys
 import numpy as np, pylab as pl
 import scipy.spatial, scipy.signal
+import copy
 
 import diffpy.structure
 import Dans_Diffraction as dif
@@ -46,6 +47,9 @@ class CS:
     
     def get(self,prop):
         return self.__getattribute__(prop)
+    
+    def copy(self):
+        return copy.deepcopy(self)
     
     
     class ElasticConstants:

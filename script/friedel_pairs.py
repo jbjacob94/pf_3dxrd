@@ -62,7 +62,7 @@ def form_y_pairs(cf, ds, disp=True):
 
     
 
-def check_y_symmetry(cf, ds, saveplot=False):
+def check_y_symmetry(cf, ds, saveplot=False, fname_plot = None):
     """check that paired scans contain about the same number of peaks + total peak intensity. For each pair, computes total intensity + total nb of peaks and plot them in function of abs(dty). If the dty and -dty plots do not fit, it is likely that the sample was not correctly aligned on the rotation center, or that dty is not centered on zero.
     
     Args:
@@ -74,7 +74,7 @@ def check_y_symmetry(cf, ds, saveplot=False):
     Nrows, Sum_I = [],[]
     
     if not hasattr(ds, 'ypairs'):
-        form_y_pairs(ds, disp=False)
+        form_y_pairs(cf, ds, disp=False)
     
     for i,j in tqdm(ds.ypairs):
         sum_I_hi = cf.sum_intensity[abs(cf.dty-i) < 0.5*ds.ystep] 
@@ -101,7 +101,9 @@ def check_y_symmetry(cf, ds, saveplot=False):
     
     f.suptitle('dty alignment – '+str(ds.dsname))
     if saveplot is True:
-        f.savefig(os.path.join(os.getcwd(), ds.dsname+'_dty_alignment.png'), format='png')
+        if fname_plot is None:
+            fname_plot = os.path.join(os.getcwd(), ds.dsname, ds.dsname+'_dty_alignment.png')
+        f.savefig(fname_plot, format='png')
             
     
     
@@ -135,7 +137,49 @@ def select_ypair(cf, ds, pair_id):
 # functions used for pair matching
 ##############################################################
         
-def compute_csr_dist_mat(c1, c2, dist_cutoff, mult_fact_tth, mult_fact_I):
+def normalized_search_space(cf, mask, flip_eta_omega=True):
+    """
+    returns normalized variables used to build the 4D search space (eta_n, omega_n, tth_n, I_n) in which distance matrix between peaks is computed. 
+    Normalization scheme is as follows:
+    eta_n   = (eta/360) mod 1
+    omega_n = (omega/360) mod 1
+    I_n     = (log(I) - log(I).min) / (log(I).max - log(I).min)
+    tth_n   = (ln(tan_tth) - ln(tan_tth).min / (ln(tan_tth).min - ln(tan_tth).max)    where tan_tth = tan(tth)
+    
+    Thus, the spread in each dimension is restrained to the [0,1] interval. Intensity and 2-theta are re-scaled before normalization. 
+    For intensity, logarithmic scaling is used because peak intensity spans several orders of magnitude. Thus, significant intensity variations are  
+    better represented on a logarithmic scale than on a linear scale. For two-theta, the need for rescaling is related to the fact that 2-theta variations
+    related to geometrical offset dx increases with the scattering angle: Δtan(2θ) ∝ dx.tan(2θ). In contrast, the difference in logarithm of tan(2θ)
+    only depends on the detector distance and geometrical offset. 
+    
+    Args:
+    ----------
+    cf   : input columnfule
+    mask : boolean mask to select subset in cf
+    flip_eta_omega (Bool). If True, eta and omega coordinate are flipped to match fridel pairs in symmetrical scans.
+    """
+    if mask is None:
+        mask = np.full(cf.nrows, True)
+    
+    # eta - omega
+    if flip_eta_omega:
+        eta_n = ((180 - cf.eta[mask])/360) % 1
+        omega_n = ((180+cf.omega[mask])/360) % 1
+    else:
+        eta_n = (cf.eta[mask]/360) % 1
+        omega_n = (cf.omega[mask]/360) % 1
+    # sum_intensity
+    logI = np.log10(cf.sum_intensity[mask])
+    I_n = (logI - logI.min()) / (logI.max() - logI.min())
+    # two-theta
+    logtth = np.log(np.tan(np.radians(cf.tth[mask])))
+    tth_n = (logtth - logtth.min()) / (logtth.max() - logtth.min())
+    
+    return eta_n, omega_n, tth_n, I_n
+    
+
+    
+def compute_csr_dist_mat(c1, c2, dist_cutoff=1.):
     """
     Core function for friedel pair matching. 
     
@@ -144,6 +188,49 @@ def compute_csr_dist_mat(c1, c2, dist_cutoff, mult_fact_tth, mult_fact_I):
     containing mostly zeros, except when two peaks are close to each other. This sparse matrix is then cleaned to keep only one non-zero value
     per row and column, so that each peak in c1 is associated to at most one single peak in c2, and conversely (func clean_csr_dist_mat below). 
     
+    Peak distance is computed in a 4D-space defined using (2-theta, eta, omega, sum_intensity). c2 peaks are flipped in eta and omega in order to make
+    them match with peaks from c1 for these coordinates. eta, omega, two-theta and sum_Intensity need to be re-scaled and normalized to vary within comparable range. 
+    
+    For eta and omega, simple normalization to [0,1] interval is done by dividing angle in degree by 360 and applying a modulo 1 operation
+    For 2-theta and intensity, a re-scaling is done prior to normalization: f(tth) = 1/tan(tth) and f(sumI) = log(sumI). 
+    
+    For 2-theta (tth), f(tth) = a / [tan(tth) + b] where b is arbitrarily set to 0.04 and a is defined using the mult_fact_tth parameter
+    For sum_Intensity, g(sum_intensity) = k*sum_I**1/3, where k is a constant defined using the mult_fact_I parameter.
+    
+    The sparse matrix could also be computed in the reciprocal space, using g-vector coordinates (gx,gy,gz) + another dimension for intensity. It seems 
+    to work, but is is maybe less intuitive and I have not evaluated yet how consistent it is with pair matching in (tth, eta, omega, I) space.
+    
+    Args:
+    --------
+    c1, c2        : pair of ImageD11 columnfiles 
+    dist_cutoff   : distance threshold for csr_matrix. All values above are reset to zero
+    mult_fact_tth : scale_factor for 2-theta
+    mult_fact_I   : scale_factor for sum_intensity
+    
+    Outputs:
+    ---------
+    dij (csr mat) : sparse distance matrix between peaks from c1 and c2. shape (c1.nrows,c2.nrows)
+    """
+    
+    # mask to select non-paired data. fp_id contains the labels for friedel_pairs. It is initialized to -1, and then updated iteratively
+    msk1 = c1.fp_id == -1
+    msk2 = c2.fp_id == -1
+    
+    # form KDTrees and compute distance matrix
+    g1 = np.transpose(normalized_search_space(c1, msk1, flip_eta_omega=False))
+    a = scipy.spatial.cKDTree( g1 )
+    g2 = np.transpose(normalized_search_space(c2, msk2, flip_eta_omega=True))
+    b = scipy.spatial.cKDTree( g2 )
+    
+    dij = csr_matrix( a.sparse_distance_matrix( b, dist_cutoff ) )
+                      
+    return dij    
+
+
+def compute_csr_dist_mat_old(c1, c2, dist_cutoff, mult_fact_tth, mult_fact_I):
+    """
+    DEPRECATED !!!!  Old version using non-normalized search space
+   
     Peak distance is computed in a 4D-space defined using (2-theta, eta, omega, sum_intensity). c2 peaks are back-rotated in eta and omega in order to make
     them match with peaks from c1 for these coordinates. eta and omega are angles of comparable values, but intensity and 2-theta need to be rescaled 
     so that the distance between two paks along these two dimensions is similar to those of in eta and omega diensions. 
@@ -173,7 +260,7 @@ def compute_csr_dist_mat(c1, c2, dist_cutoff, mult_fact_tth, mult_fact_I):
     # rescale tth + sum_intensity to have a spread comparable to omega and eta 
     tth_1 = 1./(np.tan(np.radians(c1.tth[msk1])) + 0.04) * mult_fact_tth
     tth_2 = 1./(np.tan(np.radians(c2.tth[msk2])) + 0.04) * mult_fact_tth
-    
+
     sI1 = pow( c1.sum_intensity[msk1], 1/3 ) * mult_fact_I
     sI2 = pow( c2.sum_intensity[msk2], 1/3 ) * mult_fact_I
     
@@ -243,7 +330,7 @@ def clean_csr_dist_mat(dij_csr, verbose=True):
   
 
 
-def label_friedel_pairs(c1, c2, dist_max=1., dist_step=0.1, mult_fact_tth = 1/2, mult_fact_I = 1/25, verbose=True, doplot=False):
+def label_friedel_pairs(c1, c2, dist_max=1., dist_step=0.1, verbose=True, doplot=False):
     """
     Big scary function to find Friedel pairs in symmetric columnfiles c1 and c2. It is organized in different steps:
     
@@ -265,9 +352,8 @@ def label_friedel_pairs(c1, c2, dist_max=1., dist_step=0.1, mult_fact_tth = 1/2,
      Sort the merged columnfile by fp_id, so c_merged.fp_id = [0,0,1,1,2,2,...n,n]
      
     PLOT
-     plot some statstics about the distance between paired peaks. 4D distance in (f(tth), eta, omega, g(I)) search space 
-     and distance along each individual dimension. Ideally, the distribution of 4D distance should have a peak close to zero and then decrease 
-     rapidly. Pairs with large fp_dist are likely dodgy, and may be screened out afterwhile. 
+     plot some statstics about the distance between paired peaks. 4D distance in normalized 4D search space 
+     and distance along each individual dimension, expressed in more meaningful quantities (angles for eta, omega and two-theta, normalized intensity for I)
      
      
     Args:
@@ -276,9 +362,6 @@ def label_friedel_pairs(c1, c2, dist_max=1., dist_step=0.1, mult_fact_tth = 1/2,
     dist_max  : float parameter controlling the max distance threshold to apply for the Friedel pair search loop.
                 Take something close to 1 is usually a good guess. 
     dist_step : float parameter controlling dist_cutoff increase at each iteration. Must be << dist_max. Start with something close to 0.1 first, and adjust if needed
-
-    mult_fact_tth : (float) scaling factor for 2-theta (see compute_csr_dist_mat for explanation)
-    mult_fact_I   : (float) scaling factor for intensity (see compute_csr_dist_mat for explanation)
     
     verbose : (bool) print information about pairing process
     doplot  : (bool) plot some statistics to evaluate quality of pairing
@@ -305,7 +388,7 @@ def label_friedel_pairs(c1, c2, dist_max=1., dist_step=0.1, mult_fact_tth = 1/2,
    
     fp_labels = []   # friedel pair labels list, updated at each iteration with newly found set of friedel pairs
     npkstot = min(c1.nrows, c2.nrows)  # maximum number of pairs to find. Used to compute proportion of paired peaks
-    
+    sumI_tot = sum(c1.sum_intensity) + sum(c2.sum_intensity)
     
     # FRIEDEL PAIR SEARCH LOOP
     ###############################################################################################
@@ -318,9 +401,12 @@ def label_friedel_pairs(c1, c2, dist_max=1., dist_step=0.1, mult_fact_tth = 1/2,
         
         # find Friedel pairs. c1_indx and c2_indx are indices of paired peaks in c1[msk1] and c2[msk2] (msk1 and msk2 defined in compute_csr_dist_mat)
         # Since c1 and c2 have been sorted by fp_id, putting all unpaired peaks at the begining, indices to select are the same in c1 and c2
-        
-        dij = compute_csr_dist_mat(c1, c2, dist_cutoff, mult_fact_tth = mult_fact_tth, mult_fact_I = mult_fact_I)
-        dist, c1_indx, c2_indx = clean_csr_dist_mat(dij, verbose=verbose)
+        try:
+            dij = compute_csr_dist_mat(c1, c2, dist_cutoff)
+            dist, c1_indx, c2_indx = clean_csr_dist_mat(dij, verbose=verbose)
+        except Exception as e:
+            print(f'Pairing error at dist_step {dist_cutoff:.2f}. Skip it')
+            continue
                 
         # update the list of friedel pair labels
         if not fp_labels:  # list is empty
@@ -351,12 +437,14 @@ def label_friedel_pairs(c1, c2, dist_max=1., dist_step=0.1, mult_fact_tth = 1/2,
     c_merged.sortby('fp_id')
     
     if verbose: 
-        print('Friedel pair identification Completed.')
-        print('N pairs = ', len(fp_labels),' out of ',npkstot, 'possible candidates')
-        print('Prop_paired = ', '%.2f' %(len(fp_labels)/npkstot) )
+        print(f'==============================\nFriedel pair matching Completed.')
+        print(f'N pairs = {len(fp_labels)} out of {npkstot} possible candidates')
+        print(f'Fraction of peaks matched = {len(fp_labels)/npkstot:.2f}')
+        print(f'Fraction of intensity matched = {sum(c_merged.sum_intensity)/sumI_tot:.2f}')
    
+    
 
-    # PLOT SOME STATISTICS
+    # PLOT SOME STATISTICS: distance between paired peaks along each dimension
     ###############################################################################################
 
     if doplot:
@@ -364,47 +452,51 @@ def label_friedel_pairs(c1, c2, dist_max=1., dist_step=0.1, mult_fact_tth = 1/2,
         m2 = c2.fp_id>=0
         
         if verbose:
-            print('dstep_max=', dist_steps[-1])
+            print(f'dstep_max = {dist_steps[-1]:.3f}')
         
-        # independant dimensions of 4D space in whihc friedel pairs are searched (f(tth), eta, omega, g(I))
-        tth_dist = 1./(np.tan(np.radians(c1.tth[m1])) + 0.04) * mult_fact_tth - 1./(np.tan(np.radians(c2.tth[m2])) + 0.04) * mult_fact_tth
-        sumI_dist = pow( c1.sum_intensity[m1], 1/3 ) * mult_fact_I - pow( c2.sum_intensity[m2], 1/3 ) * mult_fact_I
-        eta_dist = (c1.eta[m1]%360 - (180-c2.eta[m2])%360)
-        omega_dist = (c1.omega[m1]%360 - (180+c2.omega[m2])%360)
+        # coordinates in norrmalized search space
+        e1,o1,tth1,sI1 = normalized_search_space(c1, mask=m1, flip_eta_omega=False)
+        e2,o2,tth2,sI2 = normalized_search_space(c2, mask=m2, flip_eta_omega=True)
+        
+        # distance along each dimension. Those are rescaled to some meaningful range: real angles in eta, omega, tth; sumI is kept in normalized space
+        eta_dist   = (e2 - e1) * 360
+        omega_dist = (o2 - o1) * 360
+        tth_dist   = c2.tth[m2] - c1.tth[m1]
+        sumI_dist  = sI2 - sI1
         
         # for scaling axes
         def x_lim(x):
-            return np.percentile(x,5), np.percentile(x,95)
+            return np.percentile(x,2), np.percentile(x,98)
         def x_bins(x):
-            return np.linspace(np.percentile(x,5), np.percentile(x,95),200)
+            return np.linspace(np.percentile(x,2), np.percentile(x,98),200)
         
         
         fig = pl.figure(figsize=(8,10))
         
         ax1 = fig.add_subplot(311)
         ax1.hist(c1.fp_dist[m1], bins=x_bins(c1.fp_dist[m1]), density=True);
-        ax1.set_xlabel('4D distance between pairs')
-        ax1.set_ylabel('prop. of pairs')
+        ax1.set_xlabel('Normalized distance between pairs in 4D search-space')
+        ax1.set_ylabel('density of pairs')
         ax1.set_xlim(x_lim(c1.fp_dist[m1]))
         
         ax2 = fig.add_subplot(323)
         ax2.hist(eta_dist, bins=x_bins(eta_dist), density=True);
-        ax2.set_xlabel('eta distance')
+        ax2.set_xlabel('eta mismatch (deg)')
         ax2.set_xlim(x_lim(eta_dist))
         
         ax3 = fig.add_subplot(324)
         ax3.hist( omega_dist , bins=x_bins(omega_dist), density=True);
-        ax3.set_xlabel('omega distance')
+        ax3.set_xlabel('omega mismatch (deg)')
         ax3.set_xlim(x_lim(omega_dist))
         
         ax4 = fig.add_subplot(325)
         ax4.hist(tth_dist , bins=x_bins(tth_dist), density=True);
-        ax4.set_xlabel('tth distance')
+        ax4.set_xlabel('2θ mismatch (deg)')
         ax4.set_xlim(x_lim(tth_dist))
         
         ax5 = fig.add_subplot(326)
         ax5.hist(sumI_dist, bins=x_bins(sumI_dist),density=True);
-        ax5.set_xlabel('Intensity distance')
+        ax5.set_xlabel('normalized intensity mismatch')
         ax5.set_xlim(x_lim(sumI_dist))
                      
         fig.suptitle('Mismatch between paired peaks')
@@ -416,17 +508,17 @@ def label_friedel_pairs(c1, c2, dist_max=1., dist_step=0.1, mult_fact_tth = 1/2,
 
 def process_ypair(args):
     """ group processing of ypair in a single function, which takes a list of arguments args as input 
-    Aimed to parallelize pairing process for all ypairs, but I did not manage to make multiprocessing work """
-    cf, ds, pair_id, dist_max, dist_step, mult_fact_tth, mult_fact_I,doplot = args
+    Aimed to parallelize pairing process for all ypairs """
+    cf, ds, pair_id, dist_max, dist_step, doplot = args
     c1, c2 = select_ypair(cf, ds, pair_id)
-    c_merged = label_friedel_pairs(c1, c2, dist_max, dist_step, mult_fact_tth, mult_fact_I, verbose=False, doplot=doplot)
+    c_merged = label_friedel_pairs(c1, c2, dist_max, dist_step, verbose=False, doplot=doplot)
     c_merged.sortby('fp_id')
     return c_merged
 
 
 
 
-def find_all_pairs(cf, ds, dist_max=1., dist_step=0.05, mult_fact_tth = 1, mult_fact_I = 1/20, doplot=True, verbose=True, saveplot=False):
+def find_all_pairs(cf, ds, dist_max=.1, dist_step=0.01, doplot=True, verbose=True, saveplot=False):
     """
     process successively all ypairs [-dty; +dty ] in ds.ypairs, and concatenate all the output into a new columnfile
     with friedel pairs index (fp_id) and distance between paired peaks (fp_dist). Make sure each pair get a unique label in fp_id
@@ -436,11 +528,16 @@ def find_all_pairs(cf, ds, dist_max=1., dist_step=0.05, mult_fact_tth = 1, mult_
     cf   : ImageD11 columnfile to pair
     ds   : ImageD11.sinogram.dataset.Dataset metadata, which contains the list of ypairs
     dist_max, dist_step : parameters to control distance threshold for the friedel pair search loop (see label_friedel_pairs for explanation)
-    mult_fact_tth, mult_fact_I : scaling factor for 2-theta and intensity (see compute_csr_dist_mat for explanation)
     
     doplot (bool) : plot fp_dist statistics
     verbose (bool): print some informaton oabout indexing
     saveplot (bool) : save fp_dist statistics plot 
+    
+    Returns:
+    --------------
+    cf_paired : filtered peakfile with matched peaks sorted by friedel pair id
+    fp_labels : list of fridel pair labels
+    stats     : matching statistics. [frac_pks_matched, frac_intensity_matched]
     """
     
     # check if ds contains ypairs. if not, compute them
@@ -448,13 +545,13 @@ def find_all_pairs(cf, ds, dist_max=1., dist_step=0.05, mult_fact_tth = 1, mult_
         form_y_pairs(cf, ds, disp=True)
     
     
-    # Run friedel pair search on each pair. for know, don't use multiprcessing since it does not work
+    # Run friedel pair search on each pair.
     ##########################################################################
     # list of arguments to be passed to process_ypair
     args = []
     ypairs = sorted(ds.ypairs)
     for pair_id in range(len(ypairs)):
-        args.append((cf, ds, pair_id, dist_max, dist_step, mult_fact_tth, mult_fact_I, doplot))
+        args.append((cf, ds, pair_id, dist_max, dist_step, False))
     
     print('Friedel pair search...')
 
@@ -477,7 +574,7 @@ def find_all_pairs(cf, ds, dist_max=1., dist_step=0.05, mult_fact_tth = 1, mult_
         print('Friedel pair search completed.')
     
     
-    # group all outputs into one single colfile, and update fp_labels to make sure each pair has a unique label
+    # group all outputs into one single columnfile, and update fp_labels to make sure each pair has a unique label
     ##########################################################################
     #initialization
     c_cor = out[0]
@@ -499,11 +596,15 @@ def find_all_pairs(cf, ds, dist_max=1., dist_step=0.05, mult_fact_tth = 1, mult_
     for colf in tqdm(out[1:]):
         c_cor = utils.merge_colf(c_cor, colf)
     
+    # matching stats
+    frac_pks_matched = c_cor.nrows / cf.nrows
+    frac_ints_matched = sum(c_cor.sum_intensity) / sum(cf.sum_intensity)
     
     if verbose:
-        print('Friedel pairing Completed.')
+        print('==============================\nFriedel pair matching Completed.')
         print('N pairs = ', int(c_cor.nrows/2))
-        print('Prop_paired = ', '%.2f' %(c_cor.nrows/cf.nrows) )
+        print(f'Fraction of peaks matched = {frac_pks_matched:.2f}')
+        print(f'Fraction of total intensity matched = {frac_ints_matched:.2f}')
     
     
     if doplot:
@@ -518,9 +619,9 @@ def find_all_pairs(cf, ds, dist_max=1., dist_step=0.05, mult_fact_tth = 1, mult_
         fig.show()
         
         if saveplot:
-            fig.savefig(str(ds.datapath)+'_fp_dist.png', format='png')
+            fig.savefig(os.path.join(os.getcwd(), ds.dsname, ds.dsname+'_fp_dist.png'), format='png')
                          
-    return c_cor, fp_labels
+    return c_cor, fp_labels, [frac_pks_matched,frac_ints_matched]
 
 
 
@@ -537,7 +638,7 @@ def update_geometry_s3dxrd(cf, detector = 'eiger', update_gvecs=True):
     If a grain is not precisely centered on the rotation axis but instead shifted by a certain translation vector (dx, dy, dz) from the center, it will cause an offset on the detector resulting in inaccurate measurements of 2-theta and eta values. Traditionally, these translation parameters, along with eta and 2-theta, are adjusted after the indexing process. However, with Friedel pairs, this adjustment can be made without the need for indexing.
     
     In a scanning 3dxrd experiment, the size of the thin pencil beam in y and z is small, and thus we can consider that grain offset from the
-    rotation center only occurs along the beam, ie in the x-direction, and offset in y and z is about zero. This implies that only the 2-theta angle (tth)
+    rotation center only occurs along the beam, ie in the x-direction, and offset in y and z is negligible. This implies that only the 2-theta angle (tth)
     is affected by this offset, not eta.
     
     We also know the offset in the y-direction dy, which is basically the translation dty of a given scan, stored in the dty column of the peakfile. 
@@ -549,8 +650,7 @@ def update_geometry_s3dxrd(cf, detector = 'eiger', update_gvecs=True):
     where tan1 and tan2 are respectively tan(tth1) and tan(tth2) of p1 and  p2 and L is the distance of the detector from the rotation center. 
     Thus, tth_cor provides the "true" 2-theta angle, which reflects solely the d-spacing in the crystal, excluding any offset from the rotation center.
     
-    To obtain dx and dy in the sample reference frame, they need to be back-rotated by an angle omega. This rotation places them in the sample's reference frame,
-    allowing determination of the grain's position (xs, ys) in the sample, which is then utilized for point-by-point fitting.
+    To obtain dx and dy in the sample reference frame, they need to be back-rotated by an angle omega. This rotation places them in the sample's reference frame, allowing determination of the grain's position (xs, ys) in the sample, which is then utilized for point-by-point fitting.
     
     Args:
     -------
@@ -642,7 +742,7 @@ def update_geometry_s3dxrd(cf, detector = 'eiger', update_gvecs=True):
 
 def update_geometry_boxbeam_3dxrd(cf):
     """
-     update geometry using friedel pairs, in the case of a regular 3dxrd acquisition (box beam of letter-box beam)
+     update geometry using friedel pairs, in the case of a regular 3dxrd acquisition (box beam or letter-box beam)
      
     Details:
     If a grain is not precisely centered on the rotation axis but instead shifted by a certain translation vector (dx, dy, dz) from the center,
@@ -650,7 +750,7 @@ def update_geometry_boxbeam_3dxrd(cf):
     along with eta and 2-theta, are adjusted after the indexing process. However, with Friedel pairs, this adjustment can be made without the need for 
     indexing.
     
-    In a standard 3DXRD acquisition (unlike scanning 3DXRD), the dimensions of the beam in y and z directions cannot be ignored. Consequently, the translation vector (dx, dy, dz) has three unknowns, and both 2-theta and eta require correction. Unfortunately, it's not possible to solve all these parameters with just one Friedel pair. While 2-theta and eta can be determined, solving for the translation vector (dx, dy, dz) leaves the system of equations underdetermined, with one degree of freedom remaining. Therefore, the positions of grains in the sample are adjusted later, using all the indexed peaks for each grain.
+    In a standard 3DXRD acquisition (unlike scanning 3DXRD), the dimensions of the beam in y and z directions cannot be neglected. Consequently, the translation vector (dx, dy, dz) has three unknowns, and both 2-theta and eta require correction. Unfortunately, it's not possible to solve all these parameters with just one Friedel pair. While 2-theta and eta can be determined, solving for the translation vector (dx, dy, dz) leaves the system of equations underdetermined, with one degree of freedom remaining. Therefore, the positions of grains in the sample are adjusted later, using all the indexed peaks for each grain.
     
     Visualizing the problem with cartesian coordinates in the lab reference frame (xl, yl, zl) while considering the full experimental setup (beam + detector) rotating around the sample during a scan makes it easier to understand. In this setup, the peaks forming a Friedel pair (p1 and p2) and the grains they originate from are aligned, regardless of the grain's position in the sample. The orientation of the line (p1p2) is only determined by the lattice spacing and orientation of the grain. Therefore, the coordinates of the "true" diffraction vector are obtained by halving the vector from p2 to p1. Considering the actual experimental setup where the detector remains fixed while the sample rotates, this yields the following coordinates for the corrected diffraction vector (xl,yl,zl) in the laboratory reference frame:
     

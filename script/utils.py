@@ -21,7 +21,7 @@ def colf_to_dict(cf):
     cf_dict = dict(zip(keys, cols))
     return cf_dict
 
-def colf_from_dict( pks ):
+def colf_from_dict(pks, parfile=None):
     """Convert a dictionary of numpy arrays to columnfile """
     titles = list(pks.keys())
     nrows = len(pks[titles[0]])
@@ -30,6 +30,9 @@ def colf_from_dict( pks ):
     colf = columnfile.newcolumnfile( titles=titles )
     colf.nrows = nrows
     colf.set_bigarray( [ pks[t] for t in titles ] )
+    
+    if parfile is not None:
+        colf.parameters.loadparameters(parfile)
     return colf
 
 def colf_to_hdf( colfile, hdffile, save_mode='minimal', name=None, compression='lzf', compression_opts=None):
@@ -132,14 +135,16 @@ def correct_distorsion_eiger( cf, parfile,
     dxfile, dyfile : detector distortion. Default files are valid for the eiger detector on the nanofocus station at ID11 
     """
     
-    spat = ImageD11.blobcorrector.eiger_spatial( dxfile = dxfile, dyfile = dyfile )
-    cf = ImageD11.columnfile.colfile_from_dict( spat( {t:cf.getcolumn(t) for t in cf.titles()} ) )
+    spat = blobcorrector.eiger_spatial( dxfile = dxfile, dyfile = dyfile )
+    cf = columnfile.colfile_from_dict( spat( {t:cf.getcolumn(t) for t in cf.titles} ) )
     cf.parameters.loadparameters(parfile)
     cf.updateGeometry()
+    
+    return cf
 
 
 
-def correct_disortion_frelon( cf, parfile, splinefile, detector_dim = [2048,2048]):
+def correct_disorsion_frelon( cf, parfile, splinefile, detector_dim = [2048,2048]):
     """ 
     FOR FRELON DATA. Apply detector distortion correction using a pixel look up table computed from a splinefile. 
     Adds on the geometric computations (tth, eta, gvector, etc.)
@@ -175,6 +180,8 @@ def correct_disortion_frelon( cf, parfile, splinefile, detector_dim = [2048,2048
     # load parameters and update geometry
     cf.parameters.loadparameters(parfile)
     cf.updateGeometry()
+    
+    return cf
 
 
 
@@ -426,7 +433,7 @@ def compute_kde(cf, ds, tthmin=0, tthmax=20, npks_max = 1e6, tth_step = 0.001, b
         
     if save:
         if fname is None:
-            fname = os.path.join(ds.analysispath, ds.dsname+'_bw'+str(bw)+'_kde.txt')
+            fname = os.path.join(os.getcwd(), ds.dsname, ds.dsname+'_bw'+str(bw)+'_kde.txt')
         f = open(fname,'w')
         for l in range(len(x)):
             if format(pdf[l],'.4f') == '0.0000':    # replace zeros by 0.0001 to avoid crashes with profex

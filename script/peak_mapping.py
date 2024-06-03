@@ -106,12 +106,53 @@ def pks_inds(sorted_xyi_array, xyi_list, check_list = False):
         xyi_uniq = np.unique(sorted_xyi_array)
         assert all([xyi in xyi_uniq for xyi in xyi_list]), 'some pixels in xyi_list not found in sorted_xyi_array'
     
-    return np.concatenate([pks_from_px(sorted_xyi_array, xy0, kernel_size=1) for xy0 in xyi_list])
+    return np.concatenate([pks_from_px(sorted_xyi_array, xy0, kernel_size=1, debug=1) for xy0 in xyi_list])
 
-  
+
+
+def pks_inds_fast(sorted_xyi_array, xyi_list, check_list = False):
+    """
+    find all peaks belonging to a list of pixels, defined by their xyi index. Faster version but no kernel selection possible. Usefull for peak to grain mapping
     
+    Args:
+    -------
+    sorted_xyi_array : array of sorted xyi indices in peakfile. (e.g cf.xyi)
+    xyi_list : list of xyi indices for pixels to search
+    check_list : check whether list of provided xyi indices is correct (slower). Default is False
     
-def pks_from_px(sorted_xyi_array, xy0, kernel_size=1):
+    Returns:
+    ---------
+    pks : array of index positions in cf for all peaks in pixel selection
+    """
+    
+    if check_list:
+        xyi_uniq = np.unique(sorted_xyi_array)
+        assert all([xyi in xyi_uniq for xyi in xyi_list]), 'some pixels in xyi_list not found in sorted_xyi_array'
+    
+    # find index of pixels bounding continuous line blocks in x direction -> to feed np.seachsorted    
+    px_inds_list = [xyi_list[0]]   #first pixel = first pixel from first block
+    
+    for i,px in enumerate(xyi_list[:-1]):  # loop through px in list
+        if xyi_list[i+1] > xyi_list[i]+1:   # if consecutive index values (px in same block), skip
+            px_inds_list.extend([xyi_list[i]+1, xyi_list[i+1]])   # add last pixel from block n and first pixel from block n+1 to list
+    
+    # add last pixel. 2 cases: 
+    # 1 - last px is an independent block -> even nb of values in list, create a new block just for the last px
+    # 2 - last px belong to previous block which has not been closed yet -> odd nb of values in list, just add last one to close the last block
+    if len(px_inds_list)%2 == 0: 
+        px_inds_list.extend([xyi_list[-1], xyi_list[-1]+1])
+    else:
+        px_inds_list.extend([xyi_list[-1]+1])
+    
+
+    pkbounds = np.searchsorted(sorted_xyi_array, px_inds_list)
+    
+    return np.concatenate([np.arange(lb,ub) for lb,ub in zip(pkbounds[::2],pkbounds[1::2])])
+    
+        
+        
+    
+def pks_from_px(sorted_xyi_array, xy0, kernel_size=1, debug=0):
     """ select all peaks from a pixel using xyi indices in cf. Allows selection of peaks within a n x n kernel around the pixel
     
     Args:
@@ -124,10 +165,13 @@ def pks_from_px(sorted_xyi_array, xy0, kernel_size=1):
     ---------
     pks : array of index positions in cf for all peaks in selection
     """
-    # find index positions to pass to np.searchosrted
+    # find index positions to pass to np.searchsorted
     xy0 = int(xy0)
     if kernel_size == 1:
         searchsort_inds =  [(xy0,xy0+1)]
+        
+    if debug:
+        print(f'searchsort_inds: {searchsort_inds}')
     
     else:
         n = kernel_size // 2
@@ -162,7 +206,7 @@ def pks_from_grain(cf, g, is_cf_sorted = False, check_px_inds=False):
         cf.sortby('xyi')
     
    
-    return pks_inds(cf.xyi, g.xyi_indx, check_list = check_px_inds)
+    return pks_inds_fast(cf.xyi, g.xyi_indx, check_list = check_px_inds)
 
    
 

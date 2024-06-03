@@ -333,7 +333,7 @@ class Pixelmap:
     
     
     
-    def update_pixels(self, xyi_indx, dname, newvals):
+    def update_pixels(self, xyi_indx, dname, newvals, debug=0):
         """ update data column dname with new values for a subset of pixel selected by xyi indices, without touching other pixels
         
         Args:
@@ -350,6 +350,9 @@ class Pixelmap:
         dat = self.get(dname)
         dtype = type(dat.flatten()[0])
         pxindx = np.searchsorted(self.xyi, xyi_indx)
+        
+        if debug:
+            print('pxindx', pxindx.min(), pxindx.max())
         
         # update data
         assert newvals.shape[1:] == dat.shape[1:]  # check array shape compatibility
@@ -618,10 +621,12 @@ class Pixelmap:
                 init_val = 0
             
             # dtype: float (default) or int 
-            if isinstance(self.grains.get_all(prop)[0], 'int'):
+            try:
+                isinstance(self.grains.get_all(prop)[0], 'int')
                 dtype = 'int'
-            else:
+            except:
                 dtype = 'float'
+            
             newarray = np.full(array_shape, init_val, dtype = dtype)
         
         #if grain orientation U is selected, try to compute misorientation as well
@@ -1004,7 +1009,7 @@ def load_from_hdf5(h5name, debug=0):
             cif_files.append(cif_file)
         
         if debug:
-            print('cif paths', cif_paths,'\n','files',cif_files)
+            print(f'cif paths {cif_paths} \n files {cif_files} \n pnames {pnames} \n pids {pids}')
             
         # Load grains
         if 'grains' in list(f.keys()):
@@ -1034,14 +1039,15 @@ def load_from_hdf5(h5name, debug=0):
             continue
         
         # if cif_path is valid, load crystal structure from there; otherwise, try to load it from saved cif file
-        if cif_path.endswith('cif'):
-            try:
-                cs = crystal_structure.CS(pname,pid,cpath)
-            except:
-                crystal_structure.list_to_cif(cfile, 'tmp')
-                cs = crystal_structure.CS(pname,pid,'tmp')
-                
-        pixelmap.phases.add_phase(pname, cs)
+        try:
+            cs = crystal_structure.CS(pname,pid,cpath)
+        except Exception as e:
+            print(f'cif path for phase {pname} invalid. Loading from saved file')
+            crystal_structure.list_to_cif(cfile, 'tmp')
+            cs = crystal_structure.CS(pname,pid,'tmp')
+    
+        if cs is not None:
+            pixelmap.phases.add_phase(pname, cs)
                 
     # Add data
     for d in data.keys():
@@ -1123,7 +1129,11 @@ def load_grains_dict(h5name):
         for gi in gids:
             gr = grains[gi]
             # create grain from ubi
-            g = ImageD11.grain.grain(gr['ubi'])
+            try:
+                g = ImageD11.grain.grain(gr['ubi'])
+            except Exception as e:
+                print(f'loading grain {gi} failed')
+                continue
             # load other properties
             for prop, vals in gr.items():
                 if prop == 'ubi':

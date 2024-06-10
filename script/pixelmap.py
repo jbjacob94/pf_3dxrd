@@ -427,6 +427,12 @@ class Pixelmap:
             if p == 'notIndexed' or p == pname:
                 continue
             xmap_p.phases.delete_phase(p)
+            
+        # update grain list
+        glist = xmap_p.grains.select_by_phase(pname)
+        xmap_p.grains.dict = {g.gid:g for g in glist}
+        xmap_p.grains.glist = list(xmap_p.grains.dict.values())
+        xmap_p.grains.gids = list(xmap_p.grains.dict.keys())  
         
         return xmap_p
     

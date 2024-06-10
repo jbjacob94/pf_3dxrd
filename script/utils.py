@@ -58,6 +58,9 @@ def colf_to_hdf( colfile, hdffile, save_mode='minimal', name=None, compression='
         "Max_s",
         "spot3d_id",
         "fp_id",
+        "xyi",
+        "xi",
+        "yi",
         "phase_id",
         "h", "k", "l",
         "onfirst", "onlast", "labels",
@@ -374,9 +377,60 @@ def select_tth_rings(cf, tth_calc, tth_tol, tth_max=20, is_sorted=False):
 
 
 
+def compute_tth_histogram(cf, use_tthc=True, tthmin=0, tthmax=20, tthstep = 0.001, mask=None,
+                          uself=True, doplot=False, density=False, **kwargs):
+    """
+    compute two-theta histogram
+    cf : columnfile
+    ds : dataset file
+    tthmin, tth_max: two-theta range over which kde is computed
+    tth_step : bin width for histogram
+    mask: selection mask for data in histogram. default is None
+    usetthc (bool) : use corrected tth column (tthc) instead of tth (sharper peaks on the kde). default is True.
+    uself (bool)   : use Lorentz scaling factor for intensity:  L( theta,eta ) = sin( 2*theta )*|sin( eta )| (Poulsen 2004) 
+    density : use density for histogram
+    kwargs: kwargs to pass for plotting
+    
+    Return:
+    histogram, binedges, bincens
+    """
+    if mask is None:
+        m = np.full(cf.nrows, True)
+    else:
+        m = mask
+    
+    # select tth col + range
+    if use_tthc:
+        msk = np.all([cf.tthc <= tthmax, cf.tthc >= tthmin, m], axis=0)
+        tth = cf.tthc[msk]
+    else:
+        msk = np.all([cf.tth <= tthmax, cf.tth >= tthmin, m], axis=0)
+        tth = cf.tth[msk]
+    
+    #Lorentz factor for intensity correction
+    if uself:
+        weights = cf.sum_intensity[msk] * (np.exp( cf.ds[msk]*cf.ds[msk]*0.2 ) )
+        lf = refinegrains.lf(tth, cf.eta[msk])
+        weights *= lf
+    else:
+        weights = cf.sum_intensity[msk]
+        
+    hist, binedges = np.histogram(tth, weights=weights, bins=np.arange(tthmin, tthmax, tthstep), density=density)
+    bincens = binedges[1:] - tthstep / 2
+    
+    if doplot:
+        fig = pl.figure(figsize=(10,5))
+        pl.plot(bincens, hist, **kwargs)
+        pl.xlabel('two-thet deg')
+    
+    return hist, bincens, binedges
+
+
+
 def compute_kde(cf, ds, tthmin=0, tthmax=20, npks_max = 1e6, tth_step = 0.001, bw = 0.001, usetthc = True,
                 uself = True,  doplot=True, save = True, fname=None):
-    """ compute kernel density estimate of tth column, mimmicking a powder XRD spectrum.
+    """ DEPRECATED!!!
+    compute kernel density estimate of tth column, mimmicking a powder XRD spectrum.
     
     Args:
     ----------

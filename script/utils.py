@@ -392,7 +392,7 @@ def compute_tth_histogram(cf, use_tthc=True, tthmin=0, tthmax=20, tthstep = 0.00
     kwargs: kwargs to pass for plotting
     
     Return:
-    histogram, binedges, bincens
+    histogram, bincens, binedges
     """
     if mask is None:
         m = np.full(cf.nrows, True)

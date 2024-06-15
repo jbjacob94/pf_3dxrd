@@ -3,7 +3,7 @@ import numpy as np
 import pylab as pl
 from tqdm import tqdm
 
-import ImageD11.columnfile, ImageD11.grain, ImageD11.refinegrains, ImageD11.sym_u, ImageD11.cImageD11
+import ImageD11.columnfile, ImageD11.grain, ImageD11.refinegrains, ImageD11.cImageD11
 import xfab
 from orix import quaternion as oq
 
@@ -13,11 +13,9 @@ from pf_3dxrd import utils, crystal_structure, pixelmap
 
 
 """ 
-Peaks to 2D pixel-grid and peaks to grains mapping. Includes functions for:
-- peak-to-pixel mapping and and peak selection by pixel, 
+Functions to map peaks in a peakfiles to pixels/grains defined on a 2D grid. Includes:
+- peak-to-pixel mapping and and peak selection by pixel 
 - peak-to-grain mapping and grain ubi refinment
-
-Peakfile should contain a xyi column, which gives information on peak (xs,ys) position in the sample (pixel index) inferred from Friedel pairs
 """
 
 
@@ -25,13 +23,12 @@ Peakfile should contain a xyi column, which gives information on peak (xs,ys) po
 ###########################################################################
 
 def xyi(xi, yi):
-    """ 
-    Defines unique pixel labels based on xi and yi pixel coordinates. xyi = xi + 10000 * yi. Only works if the map is less than 10000 px wide"""
+    """ Converts (xi,yi) pixel coordinates to a unique index xyi = xi + 10000 * yi. Only works if the map is less than 10000 px wide, which should normally be the case"""
     return int(xi+10000*yi)
 
 
 def xyi_inv(xyi):
-    """ return (xi,yi) pixel coordinates from a xyi label"""
+    """ converts xyi index to (xi,yi) pixel coordinates"""
     xi = xyi % 10000
     yi = xyi // 10000
     return xi, yi
@@ -40,7 +37,7 @@ def xyi_inv(xyi):
 def add_pixel_labels(cf, ds):
     """
     Use (xs,ys) peak coordinates retrieved with Friedel pairs to assign each peak to a pixel on a 2D grid.
-    Add columns xi, yi and xyi to columnfile, where (xi,yi) are pixel coordinates of the peak on the grid and xyi is a unique pixel label defined as xyi = xi + 10000.yi (good as long as the map is not larger than 10000 px)
+    Add columns xi, yi and xyi to the peakfile, where (xi,yi) are pixel coordinates on the grid and xyi is defined as xyi = xi + 10000.yi (good as long as the map is not larger than 10000 px)
     
     Args:
     -------
@@ -55,8 +52,8 @@ def add_pixel_labels(cf, ds):
 
     cf.addcolumn( xi, 'xi' )
     cf.addcolumn( yi, 'yi')
-    xyi = np.array(xi + yi * 10000, dtype=int)  # do not use np.unit32, for some reasons it is 100x slower when running np.searchsorted
-    cf.addcolumn( xyi, 'xyi')
+    xyi = np.array(xi + yi * 10000)  
+    cf.addcolumn( xyi.astype(int), 'xyi')   # do not use np.uint32, for some reasons it is 100x slower when running np.searchsorted
     cf.sortby('xyi')
     
     

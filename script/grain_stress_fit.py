@@ -96,7 +96,7 @@ def xmap_strain_stress_px(xmap, pname, stress_unit='MPa', B0 = None, overwrite_x
     stress_unit : str, give unit of stress defined with the elastic parameters
     B0 (array)  : reference unit cell shp (6,1). If not provided, reference cell stored in xmap.phase.pname is used 
     overwrite_xmap (bool) : overwrite previous strain/stress data columns
-    kwargs : keyword arguments ot pass to solve_strain_stress (see function description)
+    kwargs : keyword arguments ot pass to solve_strain_stress (see docstring of solve_strain_stress for more details)
     """
     # initialize strain stress solver
     cs = xmap.phases.get(pname).copy()
@@ -148,7 +148,7 @@ def xmap_strain_stress_grains(xmap, pname, stress_unit='MPa', B0 = None, overwri
     stress_unit : str, give unit of stress defined with the elastic parameters
     B0 (array)  : reference unit cell shp (6,1). If not provided, reference cell stored in xmap.phase.pname is use 
     overwrite_xmap (bool) : overwrite previous strain/stress data columns
-    kwargs : keyword arguments ot pass to solve_strain_stress (see function description)
+    kwargs : keyword arguments ot pass to solve_strain_stress (see docstring of solve_strain_stress for more details)
     """
     # initialize strain stress solver
     cs = xmap.phases.get(pname)

@@ -10,7 +10,6 @@ from orix import plot as opl, crystal_map as ocm, vector as ovec
 from ImageD11 import unitcell, columnfile, stress
 
 
-
 class CS:
     """ 
     class to store crystal structure information. Data import from the cif file relies on diffpy.strucure and Dans_diffraction modules.
@@ -191,7 +190,7 @@ class CS:
     
 
     
-    def find_strongest_peaks(self, Imin=0.1, Nmax=30, doplot=False):
+    def find_strongest_peaks(self, Imin=0.1, Nmax=30, prominence = 0.1, doplot=False):
         """ 
         do peaksearch on powder spectrum and return the N-strongest peaks sorted by decreasing intensity
         Imin: minimum intensity threshold for a peak
@@ -203,7 +202,7 @@ class CS:
         except:
             print('No spectrum data. Compute powder spectrum first')
         
-        pksindx, pksI = scipy.signal.find_peaks(I, height=Imin)
+        pksindx, pksI = scipy.signal.find_peaks(I, height=Imin, prominence=prominence)
         pks = tth[pksindx].tolist()
         pksI = list(pksI.values())[0].tolist()  # pksI returned in a dict. convert it to an array
     

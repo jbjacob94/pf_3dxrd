@@ -315,10 +315,10 @@ def select_subset(cf, selection_type = 'rectangle',
     
     if selection_type == 'rectangle':
         assert all([xmin < xmax, ymin < ymax])
-        mask = np.all([c.xs <= xmax, c.xs >= xmin, c.ys <= ymax, c.ys >= ymin], axis=0)
+        mask = np.all([cf.xs <= xmax, cf.xs >= xmin, cf.ys <= ymax, cf.ys >= ymin], axis=0)
         
     else:
-        mask = (c.xs - xcenter)**2 + (c.ys - ycenter)**2 <= r**2
+        mask = (cf.xs - xcenter)**2 + (cf.ys - ycenter)**2 <= r**2
 
     return mask
 

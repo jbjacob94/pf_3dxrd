@@ -25,16 +25,13 @@ available at https://github.com/FABLE-3DXRD/.
 
 crystal_structure.py module also relies on orix, Dans_diffraction and diffpy.structure modules, which can all be downloaded with pip.
 
-TO DO : create a proper package with a setup.py file and make it downloadable with pip
-
 
 ## Usage
 pf_3dxrd is basically a collection of function meant to be used with ImageD11. Tutorials are provided as jupyter notebooks in the Tutorial folder
 
 
 ## Documentation
-Read docstrings in each module. 
-TO DO: create a proper doc file
+
 
 ## License
 

@@ -458,32 +458,50 @@ class Pixelmap:
         cs = self.phases.get(pname)
         pid = cs.phase_id
         sym = cs.orix_phase.point_group.laue
-        # phase + UBI masks. pm: also select notindexed pixels, because some may be included to grain masks by smoothing (e.g if grain_id have been computed from mtex and involved smoothing of grain boundaries)
-        pm = np.any([self.phase_id == pid, self.phase_id == -1], axis=0)  
-        isUBI = np.asarray( [np.trace(ubi) != 0 for ubi in self.UBI] )   # mask: True if UBI at a given pixel position is not null
+        
+        # masks for pixel selection
+        pm = np.any([self.phase_id == pid, self.phase_id == -1], axis=0) # phase mask. 
+        isUBI = np.asarray( [np.trace(ubi) != 0 for ubi in self.UBI] )   # mask for pixels that have a consistent unit cell matrix assigned
       
-        # list of unique grain ids for the selected phase
+        # list of unique grain_id for the selected phase
         gid_u = np.unique(self.grain_id[pm]).astype(np.int16)  
         
         # if overwrite, re-initialize grains dict. Otherwise, keep existing grains in grains dict and append new ones
         if overwrite:
             self.grains.__init__()
         
-        # loop through unique grain ids, select pixels, compute mean ubi and create grain
+        # loop through unique grain_ids: for each unique grain_id, select pixels, compute mean orientation and grain properties 
         ########################################
         for i in tqdm.tqdm(gid_u):
             # skip notindexed domains
             if i == -1:
                 continue  
-            # compute median grain properties and create grain.
+            # selection mask
             gm = self.grain_id==i
-            try:   
-                ubi_g = np.nanmedian(self.UBI[pm*gm*isUBI], axis=0)
-                g = ImageD11.grain.grain(ubi_g)  
-            except:
-                print('could not create grain for id', i)
-                continue
+            
+            # compute mean grain orientation (use quaternion space for this) and return it as a matrix U_g
+            ori_gi_mask = oq.Orientation.from_matrix(self.U[pm*gm*isUBI], symmetry = sym)
+            ori_mean = ori_gi_mask.mean()
+            ori_mean.symmetry = cs.orix_phase.point_group.laue
+            ori_mean.map_into_symmetry_reduced_zone()
+            U_g = ori_mean.to_matrix()
         
+            # compute median B matrix
+            uc_med = np.median(self.unitcell[pm*gm*isUBI], axis=0)
+            B_med = ImageD11.unitcell.unitcell(uc_med).B
+            # compute mean ubi and create new grain
+            try:
+                UBI_g = np.linalg.inv(U_g.dot(B_med))[0]
+            except np.linalg.LinAlgError as e:
+                print(f'grain_id:{i}: error computing inverse matrix')
+                continue
+    
+            try:
+                g = ImageD11.grain.grain(UBI_g)  
+            except Exception as e:
+                print(f'grain_id:{i}:Left handed axis system!')
+                continue
+            
             # grain to xmap mapping
             g.gid = i
             g.phase = pname
@@ -491,15 +509,17 @@ class Pixelmap:
             g.grainsize = len(g.pxindx)
             g.surf = g.grainsize * self.grid.pixel_size**2  # grain surface in pixel_unit square
             g.xyi_indx = self.xyi[g.pxindx]    # pixel labeling using XYi indices. needed to select peaks from cf
-        
+            
+
             # phase properties + misorientation
             try:
                 og = oq.Orientation.from_matrix(g.U, symmetry = sym)
-                opx = oq.Orientation.from_matrix(self.U[gm*isUBI], symmetry=sym)
-                misOrientation = og.angle_with(opx, degrees=True)
+                #opx = oq.Orientation.from_matrix(self.U[gm*isUBI], symmetry=sym)
+                misOrientation = og.angle_with(ori_gi_mask, degrees=True)
                 g.GOS = np.median(misOrientation)  # grain orientation spread defined as median misorientation over the grain
-            except:
-                f
+            except Exception as e:
+                print(f'grain_id:{i}:error computing misorientations')
+                continue
                 
             # grain centroid
             cx = np.average(self.xi[g.pxindx], weights = self.nindx[g.pxindx])

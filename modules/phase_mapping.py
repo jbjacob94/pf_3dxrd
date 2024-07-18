@@ -1,7 +1,7 @@
-import os, sys, h5py, copy
+import os, sys, copy
 from tqdm import tqdm
 import concurrent.futures, multiprocessing
-import numpy as np, pylab as pl, math as m
+import numpy as np, pylab as pl
 
 import ImageD11.refinegrains, ImageD11.columnfile, ImageD11.parameters
 
@@ -10,7 +10,7 @@ from pf_3dxrd import utils, peak_mapping, crystal_structure, pixelmap
 
 class PhaseMapper:
     """
-    A class to perform phase mapping on a 2D pixel grid
+    A class to perform phase mapping on a 2D pixel grid. See corresponding publication [add doi when published]
     """
     # Init
     ##########################
@@ -57,7 +57,9 @@ class PhaseMapper:
     
     
     def check_peakfile(self):
-        """ make sure peakfile if ok: contains (xs,ys) + (xi,yi,xyi) columns, sorted by tthc. Also add rescaled intensity (Lorentz factor) """
+        """ 
+        make sure peakfile if ok: contains (xs,ys) + (xi,yi,xyi) columns, sorted by tthc. Also add rescaled intensity (Lorentz factor)
+        """
         
         cf = self.peakfile
         
@@ -104,7 +106,7 @@ class PhaseMapper:
             """
             # if this phase name already exists, delete it
             if pname in self.pnames:
-                print(pname, ': There is already phase with this name in self.phases. Will overwrite it.')
+                print(pname, ': There is already a phase with this name in self.phases. Will overwrite it.')
                 self.delete_phase(pname)
                 
             # write new phase and update pnames and pids lists    
@@ -148,15 +150,17 @@ class PhaseMapper:
     
     def find_strongest_bragg_peaks(self, pname, min_tth=0, max_tth=25, Nmax = 30, Imin=0.1, prominence = 0.1, doplot=False):
         """ 
-        Find N-stongest Bragg peaks for phase "pname" and add them to CS object self.phases.pname 
+        Simulate powder spectrum (Intensity vs two-theta) and find the N-stongest Bragg peaks for phase "pname". 
         Args:
         -------
         pname (str): phase name
-        min_tth, max_tth (floats) : two-theta range for peaksearch
-        Nmax (int) : maximum number of Bragg peaks. If peaksearch returns more than Nmax peaks, take only the Nmax strongest
-        Imin : minimum peak intensity (relative to the intensity of the strongest Bragg peak)
-        prominence : minimum prominence to identify a peak
+        min_tth, max_tth (floats) : two-theta range over which diffraction spectrum is computed
+        Imin       : Minimum intensity threshold to consider a local maximum as a peak
+        prominence : Minimum prominence to consider a local maximum as a peak
+        Nmax       : If the result of peaksearch contains more than Nmax peak, keep only the Nmax strongest
         doplot : if True, plot two-theta powder spectrum with peak positiosn for the selected phase
+        
+        See also: crystal_structure.compute_powder_spec, crystal_structure.find_strongest_peaks
         """
         cs = self.phases.get(pname)
         cs.compute_powder_spec(self.wl, min_tth, max_tth, doplot=False)
@@ -164,7 +168,11 @@ class PhaseMapper:
         
         
     def find_strongest_bragg_peaks_all(self, min_tth=0, max_tth=25, Nmax = 30, Imin=0.1, prominence = 0.1, doplot=False):
-        """ run find_strongest_bragg_peaks for all phases using the same paramters for peak search """
+        """
+        run find_strongest_bragg_peaks for all phases using the same parameters for peak search
+        
+        See also: find_strongest_bragg_peaks
+        """
         for pname in self.phases.pnames:
             self.find_strongest_bragg_peaks(pname, min_tth, max_tth, Nmax, Imin, prominence, doplot)
             
@@ -173,7 +181,7 @@ class PhaseMapper:
         """
         compute boolean selection mask for phase self.phases.pname.
         This mask select peaks in self.peakfile based on a two-theta distance threshold with computed Bragg peaks of the selected phase. 
-        All peaks at a distance less than tth_tol from any theoretical Bragg peak of the selected phase are selected. 
+        All peaks at a distance less than tth_tol from any theoretical Bragg peak of the selected phase are retained. 
         
         Args:
         -------
@@ -212,7 +220,11 @@ class PhaseMapper:
             
     
     def compute_phase_mask_all(self, tth_max, tth_tol):
-        """ compute boolean selection mask for all phase in self.phases, using the same tth_tol and tth_max """
+        """ 
+        compute boolean selection mask for all phase in self.phases, using the same tth_tol and tth_max
+        
+        See also: compute_phase_mask
+        """
     
         for pname in self.phases.pnames:
             self.compute_phase_mask(pname, tth_max, tth_tol)
@@ -248,8 +260,10 @@ class PhaseMapper:
         
     def best_phase_match(self, px):
         """ 
-        Find the best-matching phase on pixel px, among the list of phases in self.phases. The best-matching phase is the one gathering the highest total cumulated intensity over pixel px based on pre-computed boolean masks. Also returns confidence criteria to evaluate how good the match is.
-        Better description of the method and definition of confidence criteria in Jacob et al. (2024). 
+        Find the best-matching phase on pixel px, among the list of phases in self.phases.
+        The best-matching phase is the one gathering the highest total cumulated intensity over pixel px
+        based on pre-computed boolean masks. Also returns confidence criteria to evaluate how good the match is.
+        Better description of the method and definition of confidence criteria in the associated publication.
         
         Args:
         --------
@@ -259,8 +273,9 @@ class PhaseMapper:
         --------
         phase_id     : integer value corresponding to the index of the best phase in self.phases.pids. -1 if no phase assigned
         completeness : Proportion of total intensity (between 0 and 1) matched by the best phase on pixel px. 0 if no match found
-        uniqueness   : Proportion of intensity (between 0 and 1) matched only by the best phase (and not by any other). 0 if no match found
-        confidence   : normalized confidence index. product of completeness x uniqueness normalized to the  number of phases.
+        uniqueness   : Proportion of intensity (between 0 and 1) uniquely matched by the best phase (ie. no match found with any other
+                       phase for this subset). 0 if no match found
+        confidence   : normalized confidence index. product of completeness x uniqueness normalized to the number of phases.
         pksinds      : list of peak indexes corresponding to the phase assigned on pixel px. needed to update phase_id column in peakfile
         """
         
@@ -281,8 +296,9 @@ class PhaseMapper:
         
         # peak selection for pixel px. 
         ##########################################
-        s = peak_mapping.pks_from_px(cf.xyi, px, kernel_size=self.kernel_size)
-
+        s = peak_mapping.pks_from_px(cf.xyi, px, kernel_size=self.kernel_size)    # peak selection for phase matching
+        s_px = peak_mapping.pks_from_px(cf.xyi, px, kernel_size=1)                # peak selection for central px
+        
         if len(s) == 0:
             return default_output
         
@@ -298,7 +314,8 @@ class PhaseMapper:
         # cumulated intensity of non-overlapping peaks for each phase ki
         sum_I_ki_no_overlap = np.array([sum(cf.getcolumn(p)[s] * np.invert(cf.overlap[s]) * cf.sumI[s] ) for p in pnames])  
         # total cumulated intensity over pixel px
-        sum_I_px = sum(cf.sumI[s])                                                    
+        sum_I_px = sum(cf.sumI[s])  
+        sum_I_px_assigned = sum(cf.sumI[s] * cf.assigned[s])    
 
         # completeness and uniqueness for each phase
         completeness = sum_I_ki / sum_I_px
@@ -326,8 +343,8 @@ class PhaseMapper:
     
 
         # find pksinds
-        pks = cf.getcolumn(pnames[pids.index(pid)])[s]   # bool array to select only peaks from the indexed phase over pixel px
-        pksinds = s[pks.astype(bool)]                        # pks index of selected peaks 
+        pks = cf.getcolumn(pnames[pids.index(pid)])[s_px]   # bool array to select only peaks from the indexed phase over pixel px
+        pksinds = s_px[pks.astype(bool)]                        # pks index of selected peaks 
         
         return pid, c_best, u_best, conf_ind_best, pksinds
         
@@ -344,24 +361,27 @@ class PhaseMapper:
         xmap.add_data(np.full(xmap.xyi.shape, 0, dtype=np.float64), 'uniqueness')
         xmap.phase_id = np.full(xmap.xyi.shape, -1)
 
-        # loop through results, updare xmap and phase label in peakfile
-        for i,r in enumerate(tqdm(self.res)):
-            px = r
-            indpx = np.argwhere(xmap.xyi == px)
-            pks = self.res[r][4]
-            if len(pks) > 0:
-                xmap.Npks[indpx] = len(pks)
-                xmap.completeness[indpx] = self.res[r][1]
-                xmap.uniqueness[indpx] = self.res[r][2]
-                xmap.phase_label_confidence[indpx] = self.res[r][3]
-                xmap.phase_id[indpx] = self.res[r][0]
-                self.peakfile.phase_id[pks] = self.res[r][0]
+        # update xmap with results
+        for i,col in enumerate(['phase_id','completeness', 'uniqueness', 'phase_label_confidence']):
+            dat = np.array([self.res[px][i] for px in self.xyi_uniq])
+            xmap.update_pixels(self.xyi_uniq, col, dat)
+            
+        npks = np.array([len(self.res[px][4]) for px in self.xyi_uniq])
+        xmap.update_pixels(self.xyi_uniq, 'Npks', npks)
+        
+        # loop through results, update xmap and phase label in peakfile
+        self.peakfile.phase_id = np.full(self.peakfile.nrows, -1)
+        for i,px in enumerate(tqdm(self.xyi_uniq)):
+            if npks[i] == 0:
+                continue
+            pks = self.res[px][4]
+            self.peakfile.phase_id[pks] = self.res[px][0]
     
         print(xmap) 
     
     
     def get_stats_raw_masks(self):
-    
+        """ print fraction of intensity / nb of peaks in each phase mask """
         titles = self.phases.pnames+ ['overlap','assigned']
         stats_dict = {t:[] for t in titles}
     
@@ -386,7 +406,7 @@ class PhaseMapper:
         
         
     def get_stats_labeled_peaks(self):
-    
+        """ print fraction of intensity / nb of peaks for each phase after phase mapping has run"""
         titles = self.phases.pnames+ ['assigned']
         stats_dict = {t:[] for t in titles}
     
@@ -441,6 +461,7 @@ class PhaseMapper:
         # sort peakfile by tth
         if self.sortkey != 'tthc':
             self.peakfile.sortby('tthc')
+            self.sortkey = 'tthc'
             
         fig = pl.figure(figsize=(10,5))
             
@@ -489,16 +510,17 @@ class PhaseMapper:
         phase_colors     : use a mask to color each peak by phase. 
                            - 'from_phase_mask': pre-computed phase mask (in self.peakfile.phase_name) is used
                            - 'from_phase_id'  : final phase_id (obtaind from pixel-by-pixel phase mapping is used
-                           - None : no mask is used
+                           - None : single color for all peaks
         """ 
         
         
         # sort peakfile by tth
         if self.sortkey != 'tthc':
             self.peakfile.sortby('tthc')
+            self.sortkey = 'tthc'
          
         # limit number of peaks to plot to 1e6; Useful for large peakfiles
-        p = max(1e6/self.peakfile.nrows,1)
+        p = min(1e6/self.peakfile.nrows,1)
         m = np.random.choice([True, False], self.peakfile.nrows, p = [p, 1-p])
         m2 = np.all([self.peakfile.tthc <= max_tth, self.peakfile.tthc >= min_tth], axis=0)
         
@@ -533,15 +555,4 @@ class PhaseMapper:
         pl.xlabel('2-theta deg')
         pl.ylabel('eta deg')
                 
-            
-            
-        
-        
-        
-#################
-# METHDS TO ADD : 
-# export_results: write res outputs to xmap + update cf phase_id
-# plot functions : 
-# - tth histogram + vlines for Bragg peaks
-# - tth-eta (random selection) colored by mask in self.peakfile / by phase_id in self.peakfile
-            
+                    

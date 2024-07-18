@@ -3,10 +3,8 @@ import numpy as np, pylab as pl, math as m
 
 import fast_histogram
 import skimage.transform
-import scipy.spatial, scipy.signal
-from scipy.stats import gaussian_kde
 
-from ImageD11 import unitcell, blobcorrector, columnfile, transform, cImageD11, refinegrains, parameters
+from ImageD11 import unitcell, blobcorrector, columnfile, transform, refinegrains, parameters
 from ImageD11.blobcorrector import eiger_spatial
 
 
@@ -14,38 +12,20 @@ from ImageD11.blobcorrector import eiger_spatial
 
 # columnfile conversion: to/from dict export to hdf5, etc.. Mostly customized functions derived from ImageD11.columnfile.py
 ########################################################################################
-def colf_to_dict(cf):
-    "converts ImageD11 columnfile to python dictionnary"""
-    keys = cf.titles
-    cols = [cf[k] for k in keys]
-    cf_dict = dict(zip(keys, cols))
-    return cf_dict
-
-def colf_from_dict(pks, parfile=None):
-    """Convert a dictionary of numpy arrays to columnfile """
-    titles = list(pks.keys())
-    nrows = len(pks[titles[0]])
-    for t in titles:
-        assert len(pks[t]) == nrows, t
-    colf = columnfile.newcolumnfile( titles=titles )
-    colf.nrows = nrows
-    colf.set_bigarray( [ pks[t] for t in titles ] )
-    
-    if parfile is not None:
-        colf.parameters.loadparameters(parfile)
-    return colf
 
 def colf_to_hdf( colfile, hdffile, save_mode='minimal', name=None, compression='lzf', compression_opts=None):
     
         """
-        Saves columnfile to hdf5. Modified from ImageD11.columnfile.colfile_to_hdf
+        Saves columnfile to hdf5. Updated from ImageD11.columnfile.colfile_to_hdf to make sure new data columns introduced in
+        different modules of pf_3dxrd are saved properly.
         
         Args:
         ---------
         colfile : columnfile
         hdffile : hdf5 file path name
         save mode : minimal / full. 
-        Minimal mode saves only necessary information that cannot be computed with updateGeometry() (default), while full mode saves all columns 
+        Minimal mode saves only necessary information that cannot be computed with updateGeometry() (default),
+        while full mode saves all columns 
         """  
         # LIST OF COLUMNS TO SAVE AS INTEGERS. UPDATED FROM IMAGED11
         INTS = [
@@ -120,8 +100,7 @@ def colf_to_hdf( colfile, hdffile, save_mode='minimal', name=None, compression='
             
 
 
-
-# Geometric corrections (using detector info), updates on columnfile parameters, load structure data
+# Distortion corrections 
 ########################################################################################
 def correct_distorsion_eiger( cf, parfile,
               dxfile="/data/id11/nanoscope/Eiger/spatial_20210415_JW/e2dx.edf",
@@ -190,7 +169,7 @@ def correct_disorsion_frelon( cf, parfile, splinefile, detector_dim = [2048,2048
 
 def fix_flt( cf, splinefile, parfile ):
     """ 
-    spline correction for ImageD11 columnfile with stadard method. Slow...
+    spline correction for ImageD11 columnfile with standard method. Slow...
     
     Args:
     --------
@@ -211,6 +190,9 @@ def fix_flt( cf, splinefile, parfile ):
 
 
 
+    
+# unit cell parameters, hkl rings etc.
+########################################################################################
 
 def get_uc(cf):
     """ computes unitcell and hkl rings using parameters in cf.parameters """ 
@@ -258,22 +240,19 @@ def get_Xray_energy(wl):
 
 
 
-# Operations on columnfiles: drop column, merge two columnfiles, get columnfile size in memory , etc.
+# Operations on columnfiles: drop column, merge two columnfiles, get columnfile size, etc.
 ########################################################################################
-def merge_colf(c1, c2):
-    """ merge two columnfiles with same columns (same ncols + colnames)"""
-    titles = list(c1.keys())
-    c_merged = columnfile.newcolumnfile(titles=titles)
-    c_merged.setparameters(c1.parameters)
+
+def merge_peakfiles(cf_list):
+    """ Merge a series of peakfile containing the same columns"""
+    titles_all = [cf.titles for cf in cf_list]
+    assert all([t == titles_all[0] for t in titles_all]), 'Cannot merge peakfiles with different columns' 
     
-    assert c1.ncols==c2.ncols
-    for i in range(c1.ncols):
-        item1, item2 = list(c1.keys())[i], list(c2.keys())[i]
-        assert item1 == item2
-    c_merged.set_bigarray( [ np.append(c1[t], c2[t]) for t in titles ] )    
-    return c_merged
-
-
+    big_cf_dict = {t:np.concatenate([cf.getcolumn(t) for cf in cf_list]) for t in titles_all[0]}
+    cf_merged = columnfile.colfile_from_dict(big_cf_dict)
+    return cf_merged
+    
+            
 def dropcolumn(cf, colname):
     """ remove column from colfile """
     assert colname in cf.titles
@@ -292,13 +271,46 @@ def get_colf_size(cf, out=False):
     print('Total size = ', '%.2f' %size_MB, 'MB')
     if out:
         return size_MB
-    
 
-def select_subset(cf, selection_type = 'rectangle',
+    
+def select_subset(cf, rowinds=None, cols=None):
+    """
+    select subset from peakfile cf. keeps only columns in cols and row indices in inds
+    
+    Args:
+    ---------
+    cf      : peakfile
+    rowinds : row indices to keep. either an array of indices nb with max(inds) <= cf.nrows, or bool array of length cf.nrows
+             by default, keep all rows
+    cols    : list. naes of columns to keep. By default, keep all columns
+    """
+    
+    if cols is None:
+        cols = cf.titles
+     
+    if rowinds is None:
+        rowinds = np.full(cf.nrows, True)
+        
+    else:
+        # conver row indices to bool array
+        if np.max(rowinds) > 1:
+            assert rowinds.max() <= cf.nrows, 'max row index exceeds total row number'
+            arr = np.full(cf.nrows,False)
+            arr[rowinds] = True
+            rowinds = arr
+    
+    assert all([c in cf.titles for c in cols]), 'column names not recognized'
+    
+    cf_sub = columnfile.colfile_from_dict({t:cf.getcolumn(t)[rowinds] for t in cols})
+    return cf_sub    
+
+
+    
+def select_subset_area(cf, selection_type = 'rectangle',
                   xmin=0, ymin=0, xmax=1, ymax=1,
                   xcenter=0, ycenter=0, r=1):
     """
-    select subset of peaks based on position on the map. Columnfile must contain xs, ys columns, obtained from Friedel pairing
+    select subset of peaks based on (xs,ys) position in the sample. Peakfile must contain (xs,ys) coordinates
     
     Args:
     --------
@@ -325,8 +337,8 @@ def select_subset(cf, selection_type = 'rectangle',
 
 def recast(ary):
     """ 
-    given an array [x1, x2,...,xn] of len n, returns recast_array [x1, x1, x2, x2, ..., xn, xn] of len 2n. Useful to work with friedel pairs labels"""
-    
+    given an array [x1, x2,...,xn] of len n, returns recast_array [x1, x1, x2, x2, ..., xn, xn] of len 2n.
+    Useful to work with friedel pairs labels"""
     return np.concatenate((ary,ary)).reshape((2,len(ary))).T.reshape((2*len(ary)))     
 
 
@@ -422,86 +434,16 @@ def compute_tth_histogram(cf, use_tthc=True, tthmin=0, tthmax=20, tthstep = 0.00
         fig = pl.figure(figsize=(10,5))
         pl.plot(bincens, hist, **kwargs)
         pl.xlabel('two-thet deg')
-    
+        
+               
     return hist, bincens, binedges
 
 
 
-def compute_kde(cf, ds, tthmin=0, tthmax=20, npks_max = 1e6, tth_step = 0.001, bw = 0.001, usetthc = True,
-                uself = True,  doplot=True, save = True, fname=None):
-    """ DEPRECATED!!!
-    compute kernel density estimate of tth column, mimmicking a powder XRD spectrum.
-    
-    Args:
-    ----------
-    cf : columnfile
-    ds : dataset file
-    tthmin, tth_max: two-theta range over which kde is computed
-    tth_step : sampling density over the computed kde
-    npks_max : max number of peaks in selection to compute kde. For large peakfile, a random subset of peaks is selected, which contains at most npks_max peaks. Necessary for large peakfiles because kde function from scipy is extremely slow when npeaks becomes very large. 
-    bw : kde bandwidth
-    usetthc (bool) : use corrected tth column (tthc) instead of tth (sharper peaks on the kde). default is True.
-    uself (bool)   : use Lorentz scaling factor for intensity:  L( theta,eta ) = sin( 2*theta )*|sin( eta )| (Poulsen 2004) """
-    
-    # downsample cf if nrows > npks_max
-    rnd_msk = np.full(cf.nrows, True)  # initialize random mask
-    if cf.nrows > npks_max:
-        p = npks_max/cf.nrows
-        rnd_msk = np.random.choice(a=[True, False], size=cf.nrows, p=[p, 1-p])  
-    
-    # select tth col + range
-    if usetthc is True:
-        msk = np.all([cf.tthc <= tthmax, cf.tthc >= tthmin, rnd_msk], axis=0)
-        tth = cf.tthc[msk]
-    else: 
-        msk = np.all([cf.tth <= tthmax, cf.tth >= tthmin, rnd_msk], axis=0)
-        tth = cf.tth[msk]
-    
-    #Lorentz factor for intensity correction
-    if uself is True:
-        cor_I = cf.sum_intensity[msk] * (np.exp( cf.ds[msk]*cf.ds[msk]*0.2 ) )
-        lf = refinegrains.lf(tth, cf.eta[msk])
-        cor_I *= lf
-        
-    # compute kde
-    print('computing kde. This may take a while...')
-    kde = gaussian_kde(tth, bw_method=bw, weights=cor_I)
-
-    # resample tth values with given tth_step
-    x = np.arange(tth.min(),tth.max(),tth_step)
-    pdf = kde.pdf(x)
-
-    # plot kde
-    if doplot:
-        fig = pl.figure(figsize=(10,5))
-        fig.add_subplot(111)
-        pl.hist(tth, bins=x, weights=cor_I,density=True);
-        pl.plot(x, pdf, '-', linewidth=1., label='bw = ' +str(bw))
-        pl.xlim(tthmin, tthmax)
-        pl.xlabel('tth (deg)')
-        pl.legend()
-        pl.title('Integrated intensity profile - '+ds.dsname)
-        pl.show()
-        if save:
-            fig.savefig(ds.analysispath+'_kde.png', format='png')
-        
-    if save:
-        if fname is None:
-            fname = os.path.join(os.getcwd(), ds.dsname, ds.dsname+'_bw'+str(bw)+'_kde.txt')
-        f = open(fname,'w')
-        for l in range(len(x)):
-            if format(pdf[l],'.4f') == '0.0000':    # replace zeros by 0.0001 to avoid crashes with profex
-                f.write(format(x[l],'.4f')+' '+'0.0001'+'\n')
-            else:
-                f.write(format(x[l],'.4f')+' '+format(pdf[l],'.4f')+'\n')
-        f.close()
-    
-    return x, pdf
-
-
 
 def split_xy_chunks(cf,ds, nx, ny, doplot=True):
-    """ chunk columnfile by (xs,ys) coordinates in the sample frame. 
+    """ Split peakfile into rectangular chunks using (xs,ys) coordinates in sample reference frame. 
+    
     
     Args:
     ----------
@@ -511,8 +453,9 @@ def split_xy_chunks(cf,ds, nx, ny, doplot=True):
     doplot : plot chunk grid over sample reconstruction image
     
     Returns:
-    updates columnfile with a new chunk_id column
-    chunks : dictionnary with rectangle verticies of each chunk 
+    ----------
+    updates peakfile with a new chunk_id column
+    chunks : dictionnary with rectangle vertices for each chunk 
     """
     # bins for chunking
     xbins = np.linspace(ds.ybinedges.min(), ds.ybinedges.max(), nx+1)
@@ -531,7 +474,7 @@ def split_xy_chunks(cf,ds, nx, ny, doplot=True):
         xmin, xmax, ymin, ymax = xbins[col], xbins[col+1], ybins[row], ybins[row+1]
         chunks[chk] = [( xmin, xmax, ymin, ymax )]
 
-        msk = select_subset(cf, 'rectangle', xmin, ymin, xmax, ymax)
+        msk = select_subset_area(cf, 'rectangle', xmin, ymin, xmax, ymax)
         cf.chunk_id[msk] = chk
     
     if doplot:
@@ -608,7 +551,7 @@ def iradon_recon(cf, obins, ybins, mask=None, doplot=True, weight_by_intensity=T
         a[1].set_ylabel('y')
         a[1].set_title('iradon reconstruction')
 
-    return sino, r
+    return f, sino, r
 
 
 
@@ -651,8 +594,9 @@ def friedel_recon(cf, xbins, ybins, doplot=True, mask=None, weight_by_intensity=
         ax.set_ylabel('y mm')
         ax.set_xlabel('x mm')
         ax.set_title('Friedel pairs reconstruction')
-
-    return r
+        return f,r
+    else:
+        return r
 
 
 
@@ -661,3 +605,4 @@ def random_color_map(ncolors):
     colors = np.concatenate( (np.array([[0,0,0]]), np.random.rand(ncolors,3) ), axis=0)  
     cmap = pl.matplotlib.colors.ListedColormap(colors)
     return cmap
+

@@ -6,24 +6,22 @@ import scipy.ndimage as ndi
 
 import ImageD11.cImageD11
 import ImageD11.columnfile
-import ImageD11.finite_strain
 import ImageD11.grain
 import ImageD11.refinegrains
-import ImageD11.stress
-import ImageD11.sym_u
 import ImageD11.unitcell
 import xfab
 
-from orix import data, io, plot as opl, crystal_map as ocm, quaternion as oq, vector as ovec
+from orix import data, io, plot as opl, quaternion as oq, vector as ovec
 
 from pf_3dxrd import utils, crystal_structure, peak_mapping
 
 """
-Pixelmap Class: A class to map and plot data on a 2D pixel grid., allowing per-pixel data analysis and processing. 
+plot scanning 3DXRD outputs on a 2D pixelmap. 
 """
     
        
 # Pixelmap Class
+###########################################################################
 ###########################################################################
 
 class Pixelmap:
@@ -58,9 +56,9 @@ class Pixelmap:
     
     
     # subclasses
-    ##########################  
+    ###########################################################################
     class GRID:
-        """subclass for grid properties"""
+        """subclass for grid properties: bins, shape, pixel size, pixel unit"""
         def __init__(self, xbins, ybins):
             self.xbins = xbins
             self.ybins = ybins
@@ -143,7 +141,7 @@ class Pixelmap:
             
             
     class GRAINS_DICT:
-        """ sub-class to store grains information. Mainly a wrapper containing a dictionnary of ImageD11.grain.grain objects """
+        """ sub-class to store grains information. Wrapper containing a dictionnary of ImageD11.grain.grain objects """
         def __init__(self):
             self.dict = {}
             self.gids = list(self.dict.keys())
@@ -162,7 +160,8 @@ class Pixelmap:
             
         def get_all(self, prop, pname=None):
             """ 
-            return selected grain property for all grains in grains_dict as an array
+            return selected grain property for all grains in grains_dict as an array.
+            
             prop (str): property to select in grains , e.g. 'UBI'
             pname : select specific phase. If None, all grains are selected. Default is None 
             """
@@ -174,7 +173,8 @@ class Pixelmap:
         
         
         def select_by_phase(self, pname):
-            """ return all grains corresponding to a given phase. pname : phase name, must be in xmap.phases"""
+            """ return all grains corresponding to a given phase.
+            pname : phase name, must be in xmap.phases"""
             gsel = [g for g in self.glist if g.phase == pname]
             return gsel
         
@@ -187,15 +187,21 @@ class Pixelmap:
             setattr(g, prop, val)
         
                      
-        def plot_grains_prop(self, prop, s_factor=10, autoscale=True, percentile_cut=[5,95], out=False, **kwargs):
-            """ scatter plot of grains colored by property prop, where (x,y) is grain centroid position and s is grainsize. 
+        def plot_grains_prop(self, prop, s_factor=10, autoscale=False, percentile_cut=[5,95], out=False, **kwargs):
+            """ Make scatter plot of grains colored by selected scalar property, where (x,y) is grain centroid position and s is grainsize. 
+            
             Args:
             ---------
-            prop (str): a grain property (e.g. grains size, GOS, etc.). If "strain" or "stress" are entered, it will combine all strain /stress components in a single plot
-            s_factor (int): factor to adjust spot size on the scatter plot. size = grainsize / s_factor
-            autoscale (bool) : automatically adjust color scale to distribution for each strain / stress component. Default is True
-            percentile_cut [low,up]: percentile thresholds to cut distribution and adjust colorbar limits (for stress / strain with autoscale)
-            out (bool) : return figure. Default is False"""
+            prop (str)    : a scalar grain property (e.g. "grains size", "GOS", etc.). 
+                            If prop="strain" or prop="stress", all strain /stress components will be combined in a single plot.
+            
+            s_factor   : scaling factor to adjust spot size on the scatter plot. size = grainsize / s_factor
+            autoscale  : (bool) automatically adjust color scale to distribution for each strain / stress component. Default is False
+            percentile_cut [low,up]: percentile thresholds to cut distribution and adjust colorbar limits (with autoscale)
+            out (bool) : return figure. Default is False
+            
+            **kwargs : additional keyword arguments for plotting
+            """
             
             try:
                 cen = self.get_all('centroid')
@@ -257,42 +263,22 @@ class Pixelmap:
             """ plot histogram of selected grains property. 
             Args:
             --------
-            prop (str): grain property. To plot all strain /stress components at once, type prop='stress' or prop='strain' 
+            prop (str): scalar grain property (e.g "GOS", "grainsize").
             percentile_cut [low,up]: percentile thresholds to trim distribution and adjust histogram width
-            nbins (int) : number of bins
+            nbins (int) : number of bins in histogram
             out (bool): return figure """
             
-            if prop not in 'strain,stress'.split(','): 
-                assert np.all( [hasattr(g, prop) for g in self.glist] )
-                x = self.get_all(prop) 
-                low, up = np.percentile(x, (percentile_cut[0],percentile_cut[1]))
-                bins = np.linspace(low,up, nbins)
+            assert np.all( [hasattr(g, prop) for g in self.glist] )
+            x = self.get_all(prop) 
+            low, up = np.percentile(x, (percentile_cut[0],percentile_cut[1]))
+            bins = np.linspace(low,up, nbins)
         
-                fig = pl.figure(figsize=(6,6))
-                ax = fig.add_subplot(111)
-                h = ax.hist(x, bins, **kwargs)
-                ax.vlines(np.median(x), ymin=0, ymax=h[0].max(), colors='r', label='median')
-                ax.set_xlim(low, up)
-                ax.set_title(prop)
-            
-            else:
-                vals = self.get_all(prop)
-                if prop == 'strain':
-                    titles = 'e11,e22,e33,e23,e13,e12'.split(',')
-                else:
-                    titles = 's11,s22,s33,s23,s13,s12'.split(',')
-                
-                fig, ax = pl.subplots(2,3, figsize=(10,6))
-                ax = ax.flatten()
-                for i, (a,t) in enumerate(zip(ax, titles)):
-                    x = vals[:,i]
-                    low, up = np.percentile(x, (percentile_cut[0],percentile_cut[1]))
-                    bins = np.linspace(low,up, nbins)
-                    h = a.hist(x, bins, **kwargs)
-                    a.vlines(np.median(x), ymin=0, ymax=h[0].max(), colors='r', label='median')
-                    a.set_xlim(low,up)
-                    a.set_title(t)
-                    a.legend(loc='upper left', fontsize=7)
+            fig = pl.figure(figsize=(6,6))
+            ax = fig.add_subplot(111)
+            h = ax.hist(x, bins, **kwargs)
+            ax.vlines(np.median(x), ymin=0, ymax=h[0].max(), colors='r', label='median')
+            ax.set_xlim(low, up)
+            ax.set_title(prop)
             
             # Adjust layout
             fig.tight_layout()
@@ -304,7 +290,7 @@ class Pixelmap:
                 
 
     # methods
-    ######################
+    ###########################################################################
     def add_data(self, data, dname):
         """ add a data column to pixelmap.
         preferentially use numpy array or ndarray of shape(nx*ny,n), but lists may work as well"""
@@ -330,7 +316,6 @@ class Pixelmap:
         """ returns a deep copy of the pixelmap """
         pxmap_new = copy.deepcopy(self)
         return pxmap_new
-    
     
     
     def update_pixels(self, xyi_indx, dname, newvals, debug=0):
@@ -366,7 +351,7 @@ class Pixelmap:
         
         
     def update_grains_pxindx(self, mask=None, update_map=False):
-        """ update grains pixel masks (pxindx / xyi_indx in grain properties), according to criteriosn defined in mask.
+        """ update grains pixel masks (pxindx / xyi_indx in grain properties), according to criterions defined in mask.
         Allows to remove bad pixels (large misorientation, low npks indexed, high drlv2, etc.) from grain masks. 
         
         Args:
@@ -391,10 +376,10 @@ class Pixelmap:
         
         
     def filter_by_phase(self, pname):
-        """ Returns a new pixelmap containing only the selected phase. It will make a deep copy of the pixelmap and reinitialize
-        all pixels not corresponding to the selected phase. It will also update h5name in new pixelmap to avoid overwriting the former file
+        """ Returns a new pixelmap containing only the selected phase. Makes a deep copy of the pixelmap and reinitialize
+        all pixels not corresponding to the selected phase. Also update h5name in new pixelmap, to avoid overwriting the former file
         
-        Args    : pname : phase name. must be in self.phases
+        pname : phase name. must be in self.phases
         Returns : xmap_p: new pixelmap with only the selected phase """
         
         # make a copy of pixelmap
@@ -439,16 +424,24 @@ class Pixelmap:
     
     
     def add_grains_from_map(self, pname, overwrite=False):
-        """ Add grains to self.grains from the indexed pixelmap. 2D grain masks must be present (grain_id column), and the pixelmap must have been indexed, ie a UBI column is present as well. For each grain, the UBI value is computed as the median of all UBIs over the grain mask
+        """ 
+        Use grain masks defined in grain_id column to compute grains and add them to self.grains.
+        Assumes that local indexing has been completed (ie, the map contains a UBI colulmn with fitted lattice vectors on each pixel)
+        and grain asks are present in the grain_id column.
+        
+        For each grain mask (subset of pixel with the same grain_id value), a "median" unit cell matrix is computed as follows:
+        - unit cell (a,b,c,alpha,beta,gamma) is taken as the median unit cells of each pixel on the grain mask - > B_med matrix
+        - orientation is averaged using orix.quaternion.mean() -> U_mean matrix
+        Then UBI_mean = inv(U_mean.B_med)
 
         Args:
         ----------
         pname: name of phase to select. must be in self.phases
         overwrite: re-initialize grains dict. Default is False
         
-        
-        NB: grains ubis at this stage are 'median' ubis obtained by averaging each component of the UBI matrix individually.
-        This is quite dodgy, so you might want to refine ubis after this step. For this, you need to map the peaks from the original peakfile
+        NB: "median" unit cell matrices obtained for each grain at this stage are maybe not extremely robust:
+        Each pixel is weighted the same way, regardless of the number of peaks indexed for each pixel.
+        This is quite dodgy, so you might want to refine ubis after this step. For this, map the peaks from the original peakfile
         used for indexing to the grains in xmap, and then refine ubis using these peaks. These two steps are done using the methods 
         "map_pks_to_grains" and "refine_ubis" """
         
@@ -461,7 +454,7 @@ class Pixelmap:
         
         # masks for pixel selection
         pm = np.any([self.phase_id == pid, self.phase_id == -1], axis=0) # phase mask. 
-        isUBI = np.asarray( [np.trace(ubi) != 0 for ubi in self.UBI] )   # mask for pixels that have a consistent unit cell matrix assigned
+        isUBI = np.asarray( [np.trace(ubi) != -3 for ubi in self.UBI] )   # mask for pixels that have a consistent unit cell matrix assigned
       
         # list of unique grain_id for the selected phase
         gid_u = np.unique(self.grain_id[pm]).astype(np.int16)  
@@ -487,19 +480,25 @@ class Pixelmap:
             U_g = ori_mean.to_matrix()
         
             # compute median B matrix
-            uc_med = np.median(self.unitcell[pm*gm*isUBI], axis=0)
-            B_med = ImageD11.unitcell.unitcell(uc_med).B
+            uc_med = np.nanmedian(self.unitcell[pm*gm*isUBI], axis=0)
+            try:    
+                B_med = ImageD11.unitcell.unitcell(uc_med).B
+            except Exception as e:
+                print(f'grain_id:{i}: {e}, {uc_med}')
+                
             # compute mean ubi and create new grain
             try:
                 UBI_g = np.linalg.inv(U_g.dot(B_med))[0]
             except np.linalg.LinAlgError as e:
-                print(f'grain_id:{i}: error computing inverse matrix')
+                print(f'grain_id:{i}: {e}')
+                self.grain_id[gm] = -1  # reset grain_id n xmap
                 continue
     
             try:
                 g = ImageD11.grain.grain(UBI_g)  
             except Exception as e:
-                print(f'grain_id:{i}:Left handed axis system!')
+                print(f'grain_id:{i}:{e},{uc_med}')
+                self.grain_id[gm] = -1  # reset grain_id n xmap
                 continue
             
             # grain to xmap mapping
@@ -536,7 +535,7 @@ class Pixelmap:
         
         
     def map_pks_to_grains(self, pname, cf, overwrite=False):
-        """ map peaks from cf to grains in pixelmap for grains in self.grains.glist. 
+        """ map peaks from peakfile cf to grains in pixelmap for grains in self.grains.glist. 
         updates cf.grain_id column in peakfile and g.pksindx prop for each grain in self.grain.glist        
         
         Args:
@@ -544,6 +543,8 @@ class Pixelmap:
         pname : phase name to select
         cf    : peakfile which has been used for indexing. 
         overwrite : if True, reset 'grain_id' column in cf. default if False
+        
+        See also: peak_mapping.map_grains_to_cf
         """
         glist = self.grains.select_by_phase(pname)        
         print('peaks to grains mapping...')
@@ -553,8 +554,10 @@ class Pixelmap:
     
     
     def refine_ubis(self, pname, cf, hkl_tol, nmedian, sym):  
-        """  Refine peaks_to_grain assignement and fit ubis for all grains from the  selected phase. 
-        returns statistics about fraction of peaks retained for each grain and rotation between old and new orientations
+        """  
+         Run peak_mapping.refine_grain for each grain corresponding to the selected phase in self.grains.glist.
+         - refine peaks_to_grain assignement and fit ubis for all grains of  the selected phase
+         - returns statistics about fraction of peaks retained for each grain and rotation between old and fitted grain
         
         Args:
         ---------
@@ -575,7 +578,7 @@ class Pixelmap:
     
     ##WORK IN PROGRESS
     def refine_ubis_px(self, pname, cf, hkl_tol, nmedian, sym):
-        """ Refine UBIs for each pixel. Work in progres..."""
+        """ Refine unit cell matrix UBI for each pixel. Work in progres..."""
         pid = self.phases.get(pname).phase_id
         sel = self.phase_id == pid
         
@@ -603,8 +606,6 @@ class Pixelmap:
         return prop_indx, ang_dev
               
         
-
-    
     
     def map_grain_prop(self, prop, pname, debug=0):
         """ map a grain property (U, UBI, unitcell, grainsize, etc.) taken from grains in grains.dict to the 2D grid.
@@ -619,8 +620,11 @@ class Pixelmap:
         
         Args:
         ------
-        prop : grain property to map
+        prop : grain property to map. Must be in grains attributes 
         pname : phase name to select
+        
+        New attribute added to pixelmap:
+        prop_g : grain property mapped onto the 2D grains masks
         """
         
         # Initialize new array
@@ -694,21 +698,21 @@ class Pixelmap:
                                                  
 
     
-    def plot(self, dname, save=False, hide_cbar=False, autoscale=True, percentile_cut = [2,98],
+    def plot(self, dname, save=False, hide_cbar=False, autoscale=False, percentile_cut = [2,98],
              smooth=False, mf_size=1, out=False, **kwargs):
-        """ Make a pcolormesh plot for a selecte ddata column
+        """ Plot colormap of data in column dname using pcolormesh
         
         Args:
         --------
-        dname (str) : name of data array. data in self.dname must be a single array (shape (N,1))
-        save (bool) : save plot (default is False)
+        dname (str)      : name of data array. data in self.dname must be a 1D array (shape (N,))
+        save (bool)      : save plot (default is False)
         hide_cbar (bool) : hide colorbar from plot (delault is False)
-        smooth (bool) : apply median filter for smoothing plot
-        mf_size (int) : size of median filter kernel for smoothing. default is 1 
-        out (bool) : return figure as output (default is False)
-        autoscale (bool): automatically adjust color scale to distribution for each strain / steess component (default is True)
-        percentile_cut ([low,up]): percentile thresholds to cut distribution (for autoscale)
-        kwargs (dict) : keyword arguments passed to matplotlib"""
+        smooth (bool)    : apply median filter for smoothing
+        mf_size (int)    : size of median filter kernel for smoothing. default is 1 
+        out (bool)       : return figure as output (default is False)
+        autoscale (bool) : automatically adjust color scale to distribution (default is False)
+        percentile_cut   : percentile thresholds ([low,up]) to cut distribution (for autoscale). Default is [2,98]
+        kwargs (dict)    : keyword arguments passed to matplotlib"""
         
         nx, ny = self.grid.nx, self.grid.ny
         xb, yb = self.grid.xbins, self.grid.ybins
@@ -738,7 +742,8 @@ class Pixelmap:
                 cbar.ax.set_yticklabels(self.phases.pnames)
             else:
                 cbar = pl.colorbar(im, ax=ax, orientation='vertical', pad=0.08, shrink=0.7, label=dname)
-                cbar.formatter.set_powerlimits((-1, 1)) 
+                if 'norm' not in kwargs.keys():
+                    cbar.formatter.set_powerlimits((-1, 1)) 
         if hide_cbar:
             fig.suptitle(self.h5name.split('/')[-1].split('.h')[0], y=1.)
         
@@ -756,16 +761,16 @@ class Pixelmap:
         
         Args: 
         ---------
-        dname (str) : name of data array. data in self.dname must be a Nx6 array with strain / stress components in the following order:
-        e11,e22,e33,e23,e13,e12
-        autoscale (bool): automatically adjust color scale to distribution for each strain / steess component (default is True)
-        percentile_cut ([low,up]): percentile thresholds to cut distribution (for autoscale)
-        save (bool) : save plot (default is False)
-        hide_cbar (bool) : hide colorbar from plot (delault is False)
-        smooth (bool) : apply median filter for smoothing plot
-        mf_size (int) : size of median filter kernel for smoothing. default is 1 
-        out (bool) : return figure as output (default is False)
-        kwargs (dict) : keyword arguments passed to matplotlib""" 
+        dname (str)     : name of data array. data in self.dname must be a Nx6 array with strain / stress components
+                            in the following order: e11,e22,e33,e23,e13,e12
+        autoscale (bool): automatically adjust color scale to distribution for each strain / stress component (default is True)
+        percentile_cut  : percentile thresholds ([low,up]) to cut distribution (for autoscale). Default is [,98]
+        save (bool)     : save plot (default is False)
+        hide_cbar (bool): hide colorbar from plot (delault is False)
+        smooth (bool)   : apply median filter for smoothing plot
+        mf_size (int)   : size of median filter kernel for smoothing. default is 1 
+        out (bool)      : return figure as output (default is False)
+        kwargs (dict)   : keyword arguments passed to matplotlib""" 
         
         nx, ny = self.grid.nx, self.grid.ny 
         xb, yb = self.grid.xbins, self.grid.ybins
@@ -823,15 +828,16 @@ class Pixelmap:
         
     def hist_voigt_tensor(self, dname, percentile_cut=[2,98], nbins=100, save=False, out=False, **kwargs):
         """ plot histogram for all components of strain / stress tensor (voigt notation)
+        
         Args: 
         --------
-        dname (str) : name of data array. data in self.dname must be a Nx6 array with strain / stress components in the following order:
-        e11, e22, e33, e23, e13, e12
-        percentile_cut ([low,up]): percentile thresholds to cut distribution and adjust histogram width
-        save (bool) : save plot (default is False)
-        nbins (int): number of bins in the histogram. Default is 100
-        out (bool) : return figure as output (default is False)
-        kwargs (dict) : keyword arguments """ 
+        dname (str)    : name of data array. data in self.dname must be a Nx6 array with strain / stress components
+                         in the following order: e11, e22, e33, e23, e13, e12
+        percentile_cut : percentile thresholds ([low,up]) to cut distribution and adjust histogram width Default is [2,98]
+        save (bool)    : save plot (default is False)
+        nbins (int)    : number of bins in the histogram. Default is 100
+        out (bool)     : return figure as output (default is False)
+        kwargs (dict)  : keyword arguments """ 
         
         voigt_tensor = self.get(dname)
         # figures layout
@@ -851,7 +857,7 @@ class Pixelmap:
             x_c = x[x != float('inf')]
             low, up = np.percentile(x_c, (percentile_cut[0],percentile_cut[1]))
             bins = np.linspace(low, up, nbins)
-            h = a.hist(x_c, label=lab, bins=bins, **kwargs)
+            h = a.hist(x_c, label=t, bins=bins, **kwargs)
             a.vlines(x=np.median(x_c), ymin=0, ymax=h[0].max(), colors='r', label='median')
             a.set_title(t)
             a.set_xlim(low,up)
@@ -871,19 +877,25 @@ class Pixelmap:
     
     
     
-    def plot_ipf_map(self, phase, dname='U',ipfdir = [0,0,1], ellipsoid = False, save=False, hide_cbar=False, out=False, **kwargs):
-        """ Plot inverse pole figure color map of orientation 
+    def plot_ipf_map(self, phase, dname='U',ipfdir = [0,0,1], ellipsoid = False, smooth = False, mf_size=1,
+                     save=False, hide_cbar=False, out=False, **kwargs):
+        
+        """ Plot inverse pole figure color map of orientation. 
         
         Args:
         --------
-        phase (str): name of the phase to plot. must be in self.phases
-        dname (str) : name of orientation data array. Default is 'U'. Must be a ndarray with shape (N,3)
-        ipfdir (array): direction for the ipf colorkey in the laboratory reference frame. must be a 3x1 vector [x,y,z]. Default: z-vector [0,0,1]
-        ellipsoid (bool) : set symmetry to one of a triaxial ellipsoid (orthorombic, mmm). For ipf color map of strain stress principal components orientation
-        save (bool) : save plot (default is False)
+        phase (str)    : name of the phase to plot. must be in self.phases
+        dname (str)    : name of orientation data array. Default is 'U'. Must be a ndarray with shape (N,3)
+        ipfdir (array) : direction for the ipf colorkey in the laboratory reference frame.
+                         must be a 3x1 vector [x,y,z]. Default: z-vector [0,0,1]
+        smooth (bool)  : apply median filter for smoothing rgb colors (each r,g,b dimension is smoothed separately)
+        mf_size (int)  : size of median filter kernel for smoothing. default is 1 
+        ellipsoid (bool) : set symmetry to one of a triaxial ellipsoid (orthorombic, mmm).
+                           For ipf color map of strain stress principal components orientation
+        save (bool)    : save plot (default is False)
         hide_cbar (bool) : hide colorbar from plot (delault is False)
-        out (bool) : return figure as output (default is False)
-        kwargs (dict) : keyword arguments passed to matplotlib"""
+        out (bool)     : return fig output (default is False)
+        kwargs (dict)  : keyword arguments passed to matplotlib"""
     
         assert phase in self.phases.pnames
         
@@ -909,6 +921,11 @@ class Pixelmap:
         indx = self.nindx > 0
         rgb[~m,:] = 0 # black pixels for phases other than the one selected
         rgb[~indx,:] = 0  # keep unindexed pixels black
+        
+        rgb = rgb.reshape(nx,ny,3)
+        if smooth:
+            for d in range(3):
+                rgb[:,:,d] = ndi.median_filter(rgb[:,:,d], size=mf_size)
 
         # plot orientation map 
         fig = pl.figure(figsize=(8,8))
@@ -938,7 +955,7 @@ class Pixelmap:
     
     
             
-    def save_to_hdf5(self, h5name=None, save_mode='minimal', debug=0):
+    def save_to_hdf5(self, h5name=None, save_mode='minimal',  save_mode_grains_dict = 'minimal', debug=0):
         """ 
         save pixelmap to hdf5 format
         
@@ -946,7 +963,7 @@ class Pixelmap:
         --------
         h5name : hdf5 file name. If None, name in self.h5name will be used. default is None
         save_mode : minimal / full. If minimal, drops all columns computed from grains and columns related to strain and stress
-        
+        save_mode_grains_dict: minimal / full. If minimal, drop hkl and etasigns properties (if present), which take a lot of space
         """
         # save path
         if h5name is None:
@@ -985,7 +1002,11 @@ class Pixelmap:
                     print('error in saving cif file for phase', pname)
                 
             # save grains
-            save_grains_dict(self.grains.dict, h5name)
+            if save_mode_grains_dict == 'minimal':
+                skip =  ['hkl', 'etasigns']
+            else:
+                skip = None
+            save_grains_dict(self.grains.dict, h5name, skip = skip)
 
             # Save other data
             skip = ['grid', 'xi', 'yi', 'phases', 'pksind', 'h5name', 'grains']  # things to skip
@@ -1006,10 +1027,10 @@ class Pixelmap:
 
 # Save / load functions
 ##########################    
-        
+  
     
 def load_from_hdf5(h5name, debug=0):
-    """ load pixelmap for hdf5 file"""
+    """ load pixelmap from hdf5 file"""
     with h5py.File(h5name, 'r') as f:
         # Load grid information 
         xbins  = f['grid/xbins'][()]
@@ -1083,7 +1104,7 @@ def load_from_hdf5(h5name, debug=0):
     pixelmap.grains.gids = list(grainsdict.keys())
     pixelmap.grains.glist = list(grainsdict.values())
     
-    # remove tmp files possibly created when loaing phases
+    # remove tmp files possibly created when loading phases
     if os.path.exists('tmp') and not os.path.isdir('tmp'):
             os.remove('tmp')
 
@@ -1092,8 +1113,8 @@ def load_from_hdf5(h5name, debug=0):
 
 
 
-def save_grains_dict(grainsdict, h5name, debug=0):
-    """ save grain dictionnary to hdf5. Append data to existing hdf5 file"""
+def save_grains_dict(grainsdict, h5name, skip = None, debug=0):
+    """ save grain dictionnary to hdf5."""
     
     with h5py.File( h5name, 'a') as hout:
         # Delete the existing 'grains' group if it already exists
@@ -1110,6 +1131,8 @@ def save_grains_dict(grainsdict, h5name, debug=0):
                 print(gprops)
             
             for p in gprops:
+                if p in skip:
+                    continue
                 attr = g.__getattribute__(p)
                 if attr is None:   # skip empty attributes
                     continue
@@ -1174,4 +1197,32 @@ def load_grains_dict(h5name):
             grainsdict[int(gi)] = g
             
     return grainsdict
+    
+    
+    
+def create_from_dataset(ds, h5name = None, pixel_unit=None):
+    """ create new pixelmap and initialize the grid from dataset information. pixel unit in µm by default"""
+    
+    # bins
+    xb = yb = np.arange(len(ds.ybinedges))
+    
+    # initialize pixelmap
+    if h5name is None:
+        h5name = os.path.join(os.getcwd(), ds.dsname+'_xmap.h5')
+    xmap = Pixelmap(xb, yb, h5name = h5name)
+    
+    # pixel size and unit
+    if pixel_unit is not None:
+        xmap.grid.pixel_size = ds.ystep
+        xmap.grid.pixel_unit = pixel_unit
+    
+    elif 'frelon' in ds.detector:
+        xmap.grid.pixel_size = ds.ystep * 1000
+        xmap.grid.pixel_unit = 'µm'
+    else:
+        xmap.grid.pixel_size = ds.ystep
+        xmap.grid.pixel_unit = 'µm'
+
+    return xmap
+        
         

@@ -1,4 +1,4 @@
-import os, sys, copy, h5py
+import os, sys, copy
 import numpy as np
 import pylab as pl
 from tqdm import tqdm
@@ -11,11 +11,12 @@ from pf_3dxrd import utils, crystal_structure, pixelmap
 
 
 
-
 """ 
-Functions to map peaks in a peakfiles to pixels/grains defined on a 2D grid. Includes:
-- peak-to-pixel mapping and and peak selection by pixel 
-- peak-to-grain mapping and grain ubi refinment
+Peakfile-to-pixelmap / peakfile-to-grainmap mapping. 
+Contains function to find peaks corresponding to a pixel / grain mask on a 2D map and to assign grain labels / pixel labels to 
+peaks in a peakfile. 
+
+Also includes function for grain UBI refinment : refine grain unit cell matrix using all peaks corresponding to this grain
 """
 
 
@@ -23,7 +24,8 @@ Functions to map peaks in a peakfiles to pixels/grains defined on a 2D grid. Inc
 ###########################################################################
 
 def xyi(xi, yi):
-    """ Converts (xi,yi) pixel coordinates to a unique index xyi = xi + 10000 * yi. Only works if the map is less than 10000 px wide, which should normally be the case"""
+    """ Converts (xi,yi) pixel coordinates to a unique index xyi = xi + 10000 * yi (used in pixelmap).
+    Only works if the map is less than 10000 px wide, which should normally be the case"""
     return int(xi+10000*yi)
 
 
@@ -36,14 +38,18 @@ def xyi_inv(xyi):
 
 def add_pixel_labels(cf, ds):
     """
-    Use (xs,ys) peak coordinates retrieved with Friedel pairs to assign each peak to a pixel on a 2D grid.
-    Add columns xi, yi and xyi to the peakfile, where (xi,yi) are pixel coordinates on the grid and xyi is defined as xyi = xi + 10000.yi (good as long as the map is not larger than 10000 px)
+    Compute pixel coordinates (xi,yi) and pixel index (xyi) for each peak in a peakfile cf, using (xs,ys) coordinates in sample space. 
+    Adds new columns xi, yi and xyi to the peakfile
     
     Args:
     -------
-    cf : ImageD11 columnfile, must contain xs, ys columns giving peak coordinates in sample frame
+    cf : ImageD11 columnfile, must contain xs, ys columns giving peak coordinates in the sample reference frame
     ds : ImageD11 dataset for binning
+    
+    See also: xyi
     """
+    assert all(['xs' in cf.titles, 'ys' in cf.titles]), '(xs,ys) coordinates in sample reference frame have not been computed'
+    
     # x,y bins
     xb, yb = ds.ybinedges, ds.ybinedges
     # xi, yi: pixel coord label for each peak
@@ -59,8 +65,12 @@ def add_pixel_labels(cf, ds):
     
 def sorted_xyi_inds(cf, is_sorted=False):
     """ 
-    run np.searchsorted on sorted xyi column in cf for all unique values in this column. This returns the list of first index positions (inds) of each unique xyi value. The highest index in cf.xyi is appened to inds for selection of the highest xyi index
-    e.g: xyi = [0,0,0,1,1,2,3,3,4,4,4] -> inds = [0,3,5,6,8,10]. This allows to quickly find all peaks which have the same xyi value in cf (ie all peaks from the same pixel), which are between positions inds[i] and inds[i+1] in the sorted xyi array
+    Runs np.searchsorted on xyi column in cf. Make sure cf is sorted by xyi before. 
+    
+    Output constains the list of first index positions (inds) of each unique xyi value. 
+    e.g: xyi = [0,0,0,1,1,2,3,3,4,4,4] -> inds = [0,3,5,6,8,10]. This allows to quickly find all peaks with
+    the same xyi index in cf (ie all peaks from the same pixel), which are between positions inds[i] and inds[i+1] in the
+    sorted xyi array.
     
     Args: 
     --------
@@ -87,13 +97,14 @@ def sorted_xyi_inds(cf, is_sorted=False):
 
 def pks_inds(sorted_xyi_array, xyi_list, check_list = False):
     """
-    find all peaks belonging to a list of pixels, defined by their xyi index 
+    find all peaks belonging to a list of pixels, defined by their xyi index. Useful for peak selection over a mask 
+    covering multiple pixels.
     
     Args:
     -------
     sorted_xyi_array : array of sorted xyi indices in peakfile. (e.g cf.xyi)
-    xyi_list : list of xyi indices for pixels to search
-    check_list : check whether list of provided xyi indices is correct (slower). Default is False
+    xyi_list : list of xyi indices of pixels to search
+    check_list (bool) : check whether list of provided xyi indices is correct (slower). Default is False
     
     Returns:
     ---------
@@ -109,7 +120,8 @@ def pks_inds(sorted_xyi_array, xyi_list, check_list = False):
 
 def pks_inds_fast(sorted_xyi_array, xyi_list, check_list = False):
     """
-    find all peaks belonging to a list of pixels, defined by their xyi index. Faster version but no kernel selection possible. Usefull for peak to grain mapping
+    Find all peaks belonging to a list of pixels, defined by their xyi index.
+    Faster than pks_inds. Usefull for peak to grain mapping
     
     Args:
     -------
@@ -148,15 +160,15 @@ def pks_inds_fast(sorted_xyi_array, xyi_list, check_list = False):
     
         
         
-    
 def pks_from_px(sorted_xyi_array, xy0, kernel_size=1, debug=0):
-    """ select all peaks from a pixel using xyi indices in cf. Allows selection of peaks within a n x n kernel around the pixel
+    """ select all peaks from a pixel using xyi indices in cf. Allows selection of peaks within a n x n kernel centered on the pixel.
     
     Args:
     ---------
     sorted_xyi_array : array of sorted xyi indices in peakfile. (e.g cf.xyi)
     xy0  (int)       : pixel xyi index
-    kernel_size (int) : kernel size for peak selection arround the central pixel. must be an odd integer. default is 1: Only peaks from central pixel are selected
+    kernel_size (int) : kernel size for peak selection arround the central pixel. odd integer >=1.
+                        1 corresponds to "normal" selection only from the pixel xy0  
     
     Returns: 
     ---------
@@ -184,12 +196,13 @@ def pks_from_px(sorted_xyi_array, xy0, kernel_size=1, debug=0):
 ###########################################################################
     
 def pks_from_grain(cf, g, is_cf_sorted = False, check_px_inds=False):
-    """find peak indices corresponding to a grain g in a columnfile cf
+    """find peak indices corresponding to a grain g in a peakfile cf
+    
     Args:
     ---------
-    cf : columnfile sorted by xyi index
-    g  : grain, must contain a property xyi_indx providing the list of xyi indices over which the grain mask extends
-    is_cf_sorted : bool flag indicating whether cf has been sorted by xyi indices
+    cf : peakfile sorted by xyi index
+    g  : ImageD11 grain. must contain a "xyi_indx" attribute providing the list of xyi indices over which the grain mask extends
+    is_cf_sorted : bool flag indicating whether cf has been sorted by xyi (required for np.searchsorted)
     check_px_inds: check whether all xyi indices in g.xyi_indx are present in cf (slow). Default is False
 
 
@@ -202,15 +215,15 @@ def pks_from_grain(cf, g, is_cf_sorted = False, check_px_inds=False):
     if not is_cf_sorted:
         cf.sortby('xyi')
     
-   
     return pks_inds_fast(cf.xyi, g.xyi_indx, check_list = check_px_inds)
 
    
 
 def map_grains_to_cf(glist, cf, overwrite=False):
-    """ find peak indices in peakfile for a list of grains and map grains to peakfile / peaks to grains: 
+    """ 
+    For each grain a grain list, find corresponding peaks in the peakfile and do grains-to-peakfile / peakfile-to-grains mapping: 
     - add grain_id column to peakfile
-    - add peaks index (pksindx) as a new property to all grains in the list
+    - add peaks index (pksindx) as a new attribute to all grains in the list
     
     Args: 
     --------
@@ -238,18 +251,18 @@ def map_grains_to_cf(glist, cf, overwrite=False):
  
 
                
-# grain refinement
+# grain refinement: refine lattice vectors matrix using the whole set of peaks assigned to he grain
 ###########################################################################
                
     
 def refine_grains(glist, cf, hkl_tol, nmedian= np.inf, sym = None, return_stats=True):
-    """ Refine peaks_to_grain assignement and fit ubis
+    """ Refine peaks_to_grain assignement and fit unit cell matrix for all grains in glist
     
     - dodgy peaks are removed (drlv*drlv > hkl_tol)
     - fit outliers are removed abs(median err) > nmedian
     - peaks to grain labeling (g.pksindx) updated
     
-    Peaks slection using g.pksindx. If no attribute "pksindx" is found for the grain, run function "map_grain_to_cf" in Pixelmap
+    Peaks selection using g.pksindx. If no attribute "pksindx" is found for the grain, run function "map_grain_to_cf" in Pixelmap
     
     Args:
     -------

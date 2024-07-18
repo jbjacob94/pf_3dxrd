@@ -28,7 +28,7 @@ Shortened versions of the Jupyter notebooks in NB_tutorials, which can be more e
 So far, pf_3dxrd is not a proper package and only consists of a collection of python modules and scripts.
 To use it, just clone the repository to your project folder. 
 
-'''git clone git@github.com:jbjacob94/pf_3dxrd.git'''
+```git clone git@github.com:jbjacob94/pf_3dxrd.git```
 
 ## Dependencies
 To be included in setup.py file. 
@@ -38,7 +38,7 @@ See https://github.com/FABLE-3DXRD/
 
 crystal_structure.py module relies on orix, Dans_diffraction and diffpy.structure modules, which can all be installed with pip:
 
-'''python -m pip install Dans_diffraction diffpy.structure orix'''
+```python -m pip install Dans_diffraction diffpy.structure orix```
 
 ## Usage
 To use the pf_3dxr module, just import it into your project file. 

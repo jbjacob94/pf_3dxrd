@@ -7,14 +7,18 @@ import diffpy.structure
 import Dans_Diffraction as dif
 
 from orix import plot as opl, crystal_map as ocm, vector as ovec
-from ImageD11 import unitcell, columnfile, stress
+from ImageD11 import stress
+
 
 
 class CS:
     """ 
-    class to store crystal structure information. Data import from the cif file relies on diffpy.strucure and Dans_diffraction modules.
-    See respective documentation of these modules at
-    https://www.diffpy.org/diffpy.structure/ and https://pypi.org/project/Dans-Diffraction/1.5.0/
+    class to store crystal structure information imported from cif files. Wrapper built upon modules
+    diffpy.structure ( https://www.diffpy.org/diffpy.structure/),
+    orix (https://orix.readthedocs.io/en/stable/) and 
+    Dans_diffraction ( https://pypi.org/project/Dans-Diffraction/1.5.0/).
+    
+    Data import from the cif file relies on diffpy.strucure and Dans_diffraction modules.
     """
     
     def __init__(self, name, pid=-1, cif_path=None):
@@ -47,12 +51,13 @@ class CS:
     def get(self,prop):
         return self.__getattribute__(prop)
     
+    
     def copy(self):
         return copy.deepcopy(self)
     
     
     class ElasticConstants:
-        """ sub-class to store elastic constants."""
+        """ sub-class to store elastic constants for the stiffness tensor Cij """
         def __init__(self,
                      symmetry = None,
                      unitcell = None,
@@ -120,7 +125,18 @@ class CS:
     
     def add_data_from_cif(self, cif_path):
         """ 
-        import crystal structure information from cif file and extract different properties. 
+        Import crystal structure information from cif file and extract different properties.
+        
+        Following attributes added to CS / updated:
+        ---------------
+        cif_path (str) : path to the cif file
+        str_dans       : dif.Crystal object (from Dans_diffraction)
+        str_diffpy     : diffpy.structure object
+        orix_phase     : orix.Phase object
+        spg (str)      : name of space group
+        spg_no (int)   : space group number 
+        lattice type (str) : type of Bravais lattice (P,I,F,R, etc.)   
+        cell (array)   : unit cell array [a,b,c,alpha,beta,gamma]
         """
         
         assert os.path.exists(cif_path), 'incorrect path for crystal structure file'
@@ -142,12 +158,15 @@ class CS:
     
         self.lattice_type = self.str_dans.Symmetry.spacegroup_name()[0]
         cell = self.str_dans.Cell
-        self.cell = [cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma]
+        self.cell = np.array([cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma])
         self.orix_phase = ocm.Phase(name=self.name, space_group=self.spg_no, structure=self.str_diffpy, color=self.color)  
         
    
     def to_EpsSigSolver(self):
-        """ creates strain stress solver using unitcell and elastic constants in self.elastic_pars"""
+        """
+        creates strain stress solver (from ImageD11.stress) using unitcell and elastic constants in self.elastic_pars
+        See also: ImageD11.stress.EpsSigsolver
+        """
         
         assert 'elastic_pars' in dir(self), 'No elastic constants found in CS!'
         e = self.elastic_pars
@@ -165,12 +184,32 @@ class CS:
 
     
     def get_ipfkey(self, direction = ovec.Vector3d.zvector()):
+        """ 
+        get inverse pole figure color key from crystal point group (using orix)
+        
+        See also: https://orix.readthedocs.io/en/stable/tutorials/inverse_pole_figures.html
+        """
         self.ipfkey = opl.IPFColorKeyTSL(self.orix_phase.point_group, direction = direction)
         
         
         
     def compute_powder_spec(self, wl, min_tth=0, max_tth=25, doplot=False):
-        """simulate powder diffraction spectrum from cif data (using Dans_dif package)"""
+        """
+        simulate powder diffraction spectrum I(two-theta) from cif data (using Dans_dif module). 
+        
+        Args:
+        -------
+        wl : X-ray wavelength (Angstrom)
+        min_tth, max_tth : two-theta range over which spectrum is computed
+        doplot (bool) : plot the powder spectrum
+        
+        New attributes: 
+        -----------------------
+        powder_spec (list) : [two-theta, Intensity].
+        Intensity is normalized to [0,1], where 1 is the intensity of the strongest diffraction peak
+        
+        See also: Dans_diffraction.Scatter
+        """
     
         E_kev = X_ray_energy(wl)
         self.str_dans.Scatter.setup_scatter(scattering_type='x-ray', energy_kev=E_kev, min_twotheta=min_tth, max_twotheta=max_tth)
@@ -192,9 +231,16 @@ class CS:
     
     def find_strongest_peaks(self, Imin=0.1, Nmax=30, prominence = 0.1, doplot=False):
         """ 
-        do peaksearch on powder spectrum and return the N-strongest peaks sorted by decreasing intensity
-        Imin: minimum intensity threshold for a peak
-        Nmax: N strongest peaks to select
+        Do peaksearch on powder spectrum (simulated with Dans_diffraction) and return the N-strongest peaks
+        sorted by decreasing intensity. 
+        
+        Args:
+        ---------
+        Imin       : Minimum intensity threshold to consider a local maximum as a peak
+        prominence : Minimum prominence to consider a local maximum as a peak
+        Nmax       : If the result of peaksearch contains more than Nmax peak, keep only the Nmax strongest
+        
+        See also: scipy.signal.find_peaks
         """
         
         try:
@@ -231,7 +277,17 @@ class CS:
 ###########################
 
 def load_CS_from_cif(cif_path, name='', pid = -1):
-    """ create a CS object directly from cif file"""
+    """
+    create a CS object directly from a cif file
+    
+    Args:
+    --------
+    cif_path (str) : path to cif file
+    name (str)     : phase name
+    pid (int)      : phase id. integer label unique to the phase 
+                     (useful for defining phase_id in pixelmap and ImageD11.columnfile)
+    
+    """
     cs = CS(name, pid, cif_path)
     
     if name == '':

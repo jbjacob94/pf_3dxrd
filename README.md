@@ -24,12 +24,12 @@ A detailed tutorial organized in a series of Jupyter notebooks, to obtain 2D ori
 ### NB_examples
 Shortened versions of the Jupyter notebooks in NB_tutorials, whihc can be more easily adapted to build your own processing workflow
 
-### Installation
+## Installation
 
 So far, pf_3dxrd is not a proper package and only consists of a collection of python modules.
 To use it, just clone the repository to your project folder. 
 
-### Dependencies
+## Dependencies
 To be included in setup.py file. 
 
 pf_3dxrd is built upon ImageD11 (https://github.com/FABLE-3DXRD/), which needs to be installed with all its dependencies. 

@@ -22,12 +22,13 @@ Scripts to be executed in command lines from a terminal. Makes bathc processing 
 A detailed tutorial organized in a series of Jupyter notebooks, to obtain 2D orientation and strain /stress maps from a raw peakfile. 
 
 ### NB_examples
-Shortened versions of the Jupyter notebooks in NB_tutorials, whihc can be more easily adapted to build your own processing workflow
+Shortened versions of the Jupyter notebooks in NB_tutorials, which can be more easily adapted to build your processing workflow
 
 ## Installation
-
-So far, pf_3dxrd is not a proper package and only consists of a collection of python modules.
+So far, pf_3dxrd is not a proper package and only consists of a collection of python modules and scripts.
 To use it, just clone the repository to your project folder. 
+
+'''git clone git@github.com:jbjacob94/pf_3dxrd.git'''
 
 ## Dependencies
 To be included in setup.py file. 
@@ -36,19 +37,16 @@ pf_3dxrd is built upon ImageD11 (https://github.com/FABLE-3DXRD/), which needs t
 See https://github.com/FABLE-3DXRD/
 
 crystal_structure.py module relies on orix, Dans_diffraction and diffpy.structure modules, which can all be installed with pip:
-python -m pip install Dans_diffraction diffpy.structure orix
 
+'''python -m pip install Dans_diffraction diffpy.structure orix'''
 
 ## Usage
 To use the pf_3dxr module, just import it into your project file. 
 
-
 ## Documentation
 Details about the processing pipeline are explained in the tutorials. For specific information about each function, read the docstrings.
 
-
 ## License
-
 
 ## Credits
 Jean-Baptiste Jacob (jbjacob94)

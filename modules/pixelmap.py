@@ -188,15 +188,18 @@ class Pixelmap:
         
                      
         def plot_grains_prop(self, prop, s_factor=10, autoscale=False, percentile_cut=[5,95], out=False, **kwargs):
-            """ Make scatter plot of grains colored by selected scalar property, where (x,y) is grain centroid position and s is grainsize. 
+            """ Make scatter plot of grains colored by selected scalar property, where (x,y) is grain centroid position
+            and s is grainsize. 
             
             Args:
             ---------
             prop (str)    : a scalar grain property (e.g. "grains size", "GOS", etc.). 
-                            If prop="strain" or prop="stress", all strain /stress components will be combined in a single plot.
+                            If prop="strain" or prop="stress", all strain /stress components will be combined
+                            in a single plot.
             
             s_factor   : scaling factor to adjust spot size on the scatter plot. size = grainsize / s_factor
-            autoscale  : (bool) automatically adjust color scale to distribution for each strain / stress component. Default is False
+            autoscale  : (bool) automatically adjust color scale to distribution for each strain / stress component.
+            Default is False
             percentile_cut [low,up]: percentile thresholds to cut distribution and adjust colorbar limits (with autoscale)
             out (bool) : return figure. Default is False
             
@@ -426,7 +429,7 @@ class Pixelmap:
     def add_grains_from_map(self, pname, overwrite=False):
         """ 
         Use grain masks defined in grain_id column to compute grains and add them to self.grains.
-        Assumes that local indexing has been completed (ie, the map contains a UBI colulmn with fitted lattice vectors on each pixel)
+        Assumes that local indexing has been completed (ie, the map contains a UBI column with fitted lattice vectors on each pixel)
         and grain asks are present in the grain_id column.
         
         For each grain mask (subset of pixel with the same grain_id value), a "median" unit cell matrix is computed as follows:
@@ -476,7 +479,7 @@ class Pixelmap:
             ori_gi_mask = oq.Orientation.from_matrix(self.U[pm*gm*isUBI], symmetry = sym)
             ori_mean = ori_gi_mask.mean()
             ori_mean.symmetry = cs.orix_phase.point_group.laue
-            ori_mean.map_into_symmetry_reduced_zone()
+            ori_mean = ori_mean.map_into_symmetry_reduced_zone()
             U_g = ori_mean.to_matrix()
         
             # compute median B matrix
@@ -510,12 +513,12 @@ class Pixelmap:
             g.xyi_indx = self.xyi[g.pxindx]    # pixel labeling using XYi indices. needed to select peaks from cf
             
 
-            # phase properties + misorientation
+            # Grain orientation spread: compute misorientation angle and take the median over the grain
             try:
                 og = oq.Orientation.from_matrix(g.U, symmetry = sym)
                 #opx = oq.Orientation.from_matrix(self.U[gm*isUBI], symmetry=sym)
                 misOrientation = og.angle_with(ori_gi_mask, degrees=True)
-                g.GOS = np.median(misOrientation)  # grain orientation spread defined as median misorientation over the grain
+                g.GOS = np.median(misOrientation)  # grain orientation spread
             except Exception as e:
                 print(f'grain_id:{i}:error computing misorientations')
                 continue
@@ -607,16 +610,16 @@ class Pixelmap:
               
         
     
-    def map_grain_prop(self, prop, pname, debug=0):
+    def map_grain_prop(self, prop, pname=None, debug=0):
         """ map a grain property (U, UBI, unitcell, grainsize, etc.) taken from grains in grains.dict to the 2D grid.
-        For a grain property p, this function creates a new data column 'p_g' in pixelmap to map this property for each grain on
-        the 2D grid using grain masks.
+        For a grain property p, this function creates a new data column 'p_g' in pixelmap and assign the mean grain value
+        of the selected property to each pixel of the grain mask on the 2D grid.
         
-        To quickly map all six strain / stress components, simply type 'stress" or 'strain' as a prop and the function will
-        look for all tensor components and return a single output as a ndarray.
+        FOR GRAIN MISORIENTATION: see compute_GROD
         
-        If grain orientation (U matrix) is selected and pixel orientations are available in pixelmap, 
-        it will also compute misorientation (angle between grain and pixel orientation in degree)
+        FOR STRAIN/STRESS: To quickly map all six strain / stress components, simply type 'stress" or 'strain'
+        as a prop and the function will look for all tensor components and return a single output as a ndarray.
+        
         
         Args:
         ------
@@ -630,7 +633,6 @@ class Pixelmap:
         # Initialize new array
         #####################################
         array_shape = [ self.grid.nx * self.grid.ny ]  # size of pixelmap
-        compute_misO = False  # flag to compute misOrientation
         
         if any([s in prop for s in 'stress,strain,eps,sigma'.split(',')]):   # special case for stress / strain related data
             prop_name = prop+'_g'
@@ -645,7 +647,7 @@ class Pixelmap:
             # special values to initialize grain/phase id: -1. Default: 0
             if any([s in prop for s in 'gid,grain_id,phase_id'.split(',')]):
                 init_val = -1
-            elif any([s in prop for s in 'I1,J2'.split(',')]):
+            elif any([s in prop for s in 'I1,J2,P_hyd,von_Mises'.split(',')]):
                 init_val = np.inf
             else:
                 init_val = 0
@@ -658,45 +660,82 @@ class Pixelmap:
                 dtype = 'float'
             
             newarray = np.full(array_shape, init_val, dtype = dtype)
-        
-        #if grain orientation U is selected, try to compute misorientation as well
-        if prop == 'U':
-            try:
-                U_px = self.get('U')
-                misO = np.full(self.xyi.shape, 180, dtype=float)   # default misorientation to 180°
-                # crystal structure
-                cs = self.phases.get(pname)
-                sym = cs.orix_phase.point_group.laue
-                compute_misO = True
-            except:
-                print('No orientation data in pixelmap, or name not recognized (must be "U"). Will not compute misorientation.')
+            
                 
         # update with values from grains in graindict
-        #####################################
-        gid_map = self.get('grain_id')
-        
+        #####################################  
         for gi,g in tqdm.tqdm(zip(self.grains.gids, self.grains.glist)):
-            gm = np.argwhere(gid_map == gi).T[0]  # grain mask
+            gm = self.grain_id == gi
+            #gm = np.argwhere(gid_map == gi).T[0]  # grain mask
             
             # fill newarray. Different cases depending of prop shape
             if len(prop_shape) == 0:
                 newarray[gm] = self.grains.get(prop,gi)
             else:
                 newarray[gm,:] = self.grains.get(prop,gi)
-                
-            # misorientation
-            if prop=='U' and compute_misO:
-                og = oq.Orientation.from_matrix(newarray[gm], symmetry=sym)
-                opx =  oq.Orientation.from_matrix(self.get('U')[gm], symmetry=sym)
-                misO[gm] = og.angle_with(opx, degrees=True)
-        
+    
         # add newarray to pixelmap
         self.add_data(newarray, prop_name)
-        if compute_misO:
-            self.add_data(misO, 'misorientation')
-
-                                                 
-
+            
+            
+    def compute_GROD(self,pixel_orientation='U',axis_azimuth_dip=False):
+        """
+        computes grain reference orientation deviation (GROD) as an axis-ange rotation from the mean grain orientation.
+        Takes into account crystal symetries to return orientation deviation in the symmetry-reduced orientation space of each phase
+        
+        Args:
+        ---------
+        pixel_orientation : pixel orientation array (ndarray of 3x3 orientation matrices). default is 'U'
+        axis_azimuth_dip  : (bool) compute additional arrays with GROD axis azimuth and dip angle (in degree). default is False
+        
+        New attribute added to pixelmap:
+        GROD_ang  : GROD angle in degree (scalar array)
+        GROD_axis : GROD axis (3D vectors ndarray)
+        """
+        
+        assert pixel_orientation in self.titles(), 'pixel orientation data not recognized'
+        assert len(self.grains.glist) > 0, 'no grains in self.grains.glist. Need to compute grains first'
+        U_px = self.get(pixel_orientation)
+        
+        # initialize new arrays
+        GROD_angle = np.full(self.xyi.shape, 0, dtype=float)   # default misorientation to 0°
+        GROD_axis = np.full(self.xyi.shape+(3,),0,dtype=float)   
+        if axis_azimuth_dip:
+            GROD_axis_azimuth = np.full(self.xyi.shape, 0, dtype=float)
+            GROD_axis_dip = np.full(self.xyi.shape, 0, dtype=float)
+            
+            
+        # loop through grain list
+        for gi,g in tqdm.tqdm(zip(self.grains.gids, self.grains.glist)):
+            # select grain mask, phase name and symmetry
+            gm = self.grain_id == gi
+            pname = g.phase
+            sym = self.phases.get(pname).orix_phase.point_group.laue
+            
+            # get orientation in quaternion space and compute GROD 
+            ori_ref = oq.Orientation.from_matrix(g.U, symmetry=sym)
+            ori_px  = oq.Orientation.from_matrix(U_px[gm], symmetry=sym)
+            GROD = ori_px.outer(~ori_ref)
+            GROD.symmetry = sym
+            GROD = GROD.map_into_symmetry_reduced_zone()   # reproject to symmetry-reduced orientation space
+            
+            # update GROD axis and angles for the grain
+            GROD_angle[gm] = np.degrees(GROD.angle[:,0])
+            axis = GROD.axis.in_fundamental_sector(sym)
+            GROD_axis[gm]  = axis.data[:,0,:]
+            if axis_azimuth_dip:
+                GROD_axis_azimuth[gm] =np.degrees(GROD.axis.azimuth)[:,0]
+                GROD_axis_dip[gm] =np.degrees(GROD.axis.polar)[:,0]
+                
+        # add new arrays to xmap
+        self.add_data(GROD_angle, 'GROD_angle')
+        self.add_data(GROD_axis, 'GROD_axis')
+        if axis_azimuth_dip:
+            self.add_data(GROD_axis_azimuth, 'GROD_axis_az')
+            self.add_data(GROD_axis_dip, 'GROD_axis_dip')
+            
+                  
+            
     
     def plot(self, dname, save=False, hide_cbar=False, autoscale=False, percentile_cut = [2,98],
              smooth=False, mf_size=1, out=False, **kwargs):
@@ -952,6 +991,7 @@ class Pixelmap:
             fig.savefig(fname, format='png', dpi = 300) 
         if out:
             return fig
+        
     
     
             

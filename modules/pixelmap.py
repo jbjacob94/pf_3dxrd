@@ -678,100 +678,147 @@ class Pixelmap:
         self.add_data(newarray, prop_name)
             
             
-    def compute_GROD(self,pixel_orientation='U',axis_azimuth_dip=False):
+    def compute_GROD(self,pixel_orientation='U', reference_frame = 'sample', axis_coordinates = 'cartesian', degrees=True):
         """
-        computes grain reference orientation deviation (GROD) as an axis-ange rotation from the mean grain orientation.
-        Takes into account crystal symetries to return orientation deviation in the symmetry-reduced orientation space of each phase
+        Computes grain reference orientation deviation (GROD) as an axis-ange misorientation between the pixel orientation and 
+        the mean grain orientation. Mean grain orientation is taken from the grain list in self.grains. 
+        
+        Gives the smallest possible misorientation modulo crystal symmetry. GROD axis orientation can be 
+        returned either in the sample reference frame, or in the rotated crystal reference frame. axis coordinates can be returned 
+        as cartesian (x,y,z) or polar (azimuth,dip) coordinates.
+        
+        To plot an ipf color map of axis orientation, use cartesian coordinates. These will then converted to an orix.vector.Vector3D
+        and passed to the direction color key to return a rgb array. Note: for axis orientation in the sample reference frame, 
+        use a full color key (symmetry='C1'), as the misorientation axes in specimen coordinates have no symmetry.   
         
         Args:
         ---------
-        pixel_orientation : pixel orientation array (ndarray of 3x3 orientation matrices). default is 'U'
-        axis_azimuth_dip  : (bool) compute additional arrays with GROD axis azimuth and dip angle (in degree). default is False
+        pixel_orientation      : pixel orientation array (ndarray of 3x3 orientation matrices). default is 'U'
+        reference_frame  (str) : reference frame for the misorientation axis. 'sample' or 'crystal'
+        axis_coordinates (str) : type of coordinates for the misorientation axis. 'cartesian' (x,y,z) or 'polar' (azimuth, dip)
+        degrees  (bool)        : return angles in degree. Otherwise, keep in radiant. default is True
+
         
         New attribute added to pixelmap:
-        GROD_ang  : GROD angle in degree (scalar array)
-        GROD_axis : GROD axis (3D vectors ndarray)
+        GROD_angle: (1D array)
+        GROD axis: depends on the option specified in 'reference_frame' and 'coordinates'
+        GROD_axis_xyz / GROD_axis_xyz_c - shape (N,3) 
+        GROD_axis_polar / GROD_axis_polar_c - shape (N,2) 
         """
         
         assert pixel_orientation in self.titles(), 'pixel orientation data not recognized'
         assert len(self.grains.glist) > 0, 'no grains in self.grains.glist. Need to compute grains first'
-        U_px = self.get(pixel_orientation)
+        assert axis_coordinates in ['cartesian','polar'], 'coordinates system not recognized! must be cartesian or polar'
+        assert reference_frame in ['sample','crystal'], 'reference frame must be sample or crystal'
         
-        # initialize new arrays
-        GROD_angle = np.full(self.xyi.shape, 0, dtype=float)   # default misorientation to 0°
-        GROD_axis = np.full(self.xyi.shape+(3,),0,dtype=float)   
-        if axis_azimuth_dip:
-            GROD_axis_azimuth = np.full(self.xyi.shape, 0, dtype=float)
-            GROD_axis_dip = np.full(self.xyi.shape, 0, dtype=float)
-            
-            
-        # loop through grain list
+        # initialize new arrays for GROD angle + axis 
+        GROD_angle = np.full(self.xyi.shape, 0, dtype=float)   # default misorientation to 0
+        
+        if axis_coordinates == 'cartesian':
+            GROD_axis_xyz = np.full(self.xyi.shape+(3,),0,dtype=float)
+        else:
+            GROD_axis_polar = np.full(self.xyi.shape+(2,), 0, dtype=float)
+        
+        # select pixel orientations
+        U_px = self.get(pixel_orientation)    
+        
+        # loop through grain list and compute misorientation
         for gi,g in tqdm.tqdm(zip(self.grains.gids, self.grains.glist)):
             # select grain mask, phase name and symmetry
             gm = self.grain_id == gi
             pname = g.phase
-            sym = self.phases.get(pname).orix_phase.point_group.laue
+            phase = self.phases.get(pname).orix_phase
+            sym = phase.point_group.laue
             
-            # get orientation in quaternion space and compute GROD 
-            ori_ref = oq.Orientation.from_matrix(g.U, symmetry=sym)
-            ori_px  = oq.Orientation.from_matrix(U_px[gm], symmetry=sym)
-            GROD = ori_px.outer(~ori_ref)
-            GROD.symmetry = sym
-            GROD = GROD.map_into_symmetry_reduced_zone()   # reproject to symmetry-reduced orientation space
+            # get orientation in quaternion space and compute GROD in lab coordinates
+            ori_px  = oq.Orientation.from_matrix(U_px[gm], symmetry=sym).map_into_symmetry_reduced_zone()
+            ori_ref = oq.Orientation.from_matrix(g.U, symmetry=sym)   # already symmetry-reduced orientation
             
-            # update GROD axis and angles for the grain
-            GROD_angle[gm] = np.degrees(GROD.angle[:,0])
-            axis = GROD.axis.in_fundamental_sector(sym)
-            GROD_axis[gm]  = axis.data[:,0,:]
-            if axis_azimuth_dip:
-                GROD_axis_azimuth[gm] =np.degrees(GROD.axis.azimuth)[:,0]
-                GROD_axis_dip[gm] =np.degrees(GROD.axis.polar)[:,0]
-                
+            # misorientation. respects right-hand rule convention: counter-clockwise rotation about misorientation axis counted positive
+            GROD = oq.Misorientation(ori_px*~ori_ref, symmetry=(sym,sym))
+            axis = GROD.axis.flatten()
+            
+            # crystal reference frame: rotate axis + project in fundamental zone
+            if reference_frame == 'crystal':
+                axis = ovec.Vector3d.stack([(o.outer(m)) for (o,m) in zip(~ori_px,axis)]).flatten()
+                axis = axis.in_fundamental_sector(sym)
+            
+            # update GROD angle for the grain
+            if degrees:
+                GROD_angle[gm] = np.degrees(GROD.angle)
+            else:
+                GROD_angle[gm] = GROD.angle
+            
+            # update GROD axis for the grain
+            if axis_coordinates == 'cartesian':   
+                    GROD_axis_xyz[gm] = axis.data
+            else:
+                if degrees:
+                    az, dip = np.degrees(axis.azimuth), np.degrees(axis.polar)
+                else:
+                    az, dip = axis.azimuth, axis.polar
+                GROD_axis_polar[gm] = np.array([az,dip]).T
+
+        
         # add new arrays to xmap
         self.add_data(GROD_angle, 'GROD_angle')
-        self.add_data(GROD_axis, 'GROD_axis')
-        if axis_azimuth_dip:
-            self.add_data(GROD_axis_azimuth, 'GROD_axis_az')
-            self.add_data(GROD_axis_dip, 'GROD_axis_dip')
+        
+        if reference_frame == 'crystal':
+            c_sub = '_c'
+        else:
+            c_sub = ''
+            
+        if axis_coordinates == 'cartesian':   
+            self.add_data(GROD_axis_xyz, f'GROD_axis_xyz{c_sub}')
+        else:
+            self.add_data(GROD_axis_polar, f'GROD_axis_polar{c_sub}')
             
                   
             
     
-    def plot(self, dname, save=False, hide_cbar=False, autoscale=False, percentile_cut = [2,98],
+    def plot(self, dname, dim=0, save=False, hide_cbar=False, autoscale=False, hist_tails_cut = [2,98],
              smooth=False, mf_size=1, out=False, **kwargs):
         """ Plot colormap of data in column dname using pcolormesh
         
         Args:
         --------
-        dname (str)      : name of data array. data in self.dname must be a 1D array (shape (N,))
+        dname (str)      : name of data array to plot)
+        dim (int)        : for ndarray of shape (nx*ny,M), M>1, dimension M of the data array to plot
         save (bool)      : save plot (default is False)
         hide_cbar (bool) : hide colorbar from plot (delault is False)
         smooth (bool)    : apply median filter for smoothing
         mf_size (int)    : size of median filter kernel for smoothing. default is 1 
         out (bool)       : return figure as output (default is False)
         autoscale (bool) : automatically adjust color scale to distribution (default is False)
-        percentile_cut   : percentile thresholds ([low,up]) to cut distribution (for autoscale). Default is [2,98]
+        hist_tails_cut   : percentile thresholds ([low,up]) to cut distribution (for autoscale). Default is [2,98]
         kwargs (dict)    : keyword arguments passed to matplotlib"""
         
         nx, ny = self.grid.nx, self.grid.ny
         xb, yb = self.grid.xbins, self.grid.ybins
-        dat = self.get(dname).reshape(nx, ny)
+        
+        data = self.get(dname)
+        
+        if len(data.shape) == 1:
+            data2D = data.reshape(nx,ny)
+            title = f'{dname}'
+        else:
+            data2D = data[:,dim].reshape(nx,ny)
+            title = f'{dname}_{dim}'
         
         if smooth:
-            dat = ndi.median_filter(dat, size=mf_size)
+            data2D = ndi.median_filter(data2D, size=mf_size)
         
         fig = pl.figure(figsize=(6,6))
         ax = fig.add_subplot(111, aspect ='equal')
         ax.set_axis_off()
         
         if autoscale:
-            m = np.all([dat!=0, dat!=-1, dat!=float('inf')], axis=0)
-            dat_u = np.unique(dat[m])
-            low, up = np.percentile(dat_u, (percentile_cut[0],percentile_cut[1]))
-            im = ax.pcolormesh(xb, yb, dat, vmin=low, vmax=up, **kwargs)
+            m = np.all([data!=0, data!=-1, data!=float('inf')], axis=0)
+            low, up = np.percentile(data[m], hist_tails_cut)
+            im = ax.pcolormesh(xb, yb, data2D, vmin=low, vmax=up, **kwargs)
         else:
-            im = ax.pcolormesh(xb, yb, dat, **kwargs)
-        ax.set_title(dname)
+            im = ax.pcolormesh(xb, yb, data2D, **kwargs)
+        ax.set_title(title)
         ax.add_artist(self.grid.scalebar())
         
         if not hide_cbar:
@@ -781,20 +828,23 @@ class Pixelmap:
                 cbar.ax.set_yticklabels(self.phases.pnames)
             else:
                 cbar = pl.colorbar(im, ax=ax, orientation='vertical', pad=0.08, shrink=0.7, label=dname)
-                if 'norm' not in kwargs.keys():
+                try:
                     cbar.formatter.set_powerlimits((-1, 1)) 
+                except:  # cbar formatter does not work when LogNOrm is used 
+                    pass
+                
         if hide_cbar:
             fig.suptitle(self.h5name.split('/')[-1].split('.h')[0], y=1.)
         
         if save:
-            fname = self.h5name.replace('.h5', '_'+dname+'.png')
+            fname = self.h5name.replace('.h5', f'_{title}.png')
             fig.savefig(fname, format='png', dpi = 300) 
         if out:
             return fig
             
             
             
-    def plot_voigt_tensor(self, dname, autoscale=True, percentile_cut = [2,98],
+    def plot_voigt_tensor(self, dname, autoscale=True, hist_tails_cut = [2,98],
                           save=False, hide_cbar=False, smooth=False, mf_size=1, out=False, **kwargs):
         """ plot all components of strain / stress tensor (voigt notation) in a single figure
         
@@ -808,6 +858,7 @@ class Pixelmap:
         hide_cbar (bool): hide colorbar from plot (delault is False)
         smooth (bool)   : apply median filter for smoothing plot
         mf_size (int)   : size of median filter kernel for smoothing. default is 1 
+        hist_tails_cut  : percentile thresholds ([low,up]) to cut distribution (for autoscale). Default is [2,98]
         out (bool)      : return figure as output (default is False)
         kwargs (dict)   : keyword arguments passed to matplotlib""" 
         
@@ -916,7 +967,7 @@ class Pixelmap:
     
     
     
-    def plot_ipf_map(self, phase, dname='U',ipfdir = [0,0,1], ellipsoid = False, smooth = False, mf_size=1,
+    def plot_ipf_orientation(self, phase, dname='U',ipfdir = [0,0,1], ellipsoid = False, smooth = False, mf_size=1,
                      save=False, hide_cbar=False, out=False, **kwargs):
         
         """ Plot inverse pole figure color map of orientation. 
@@ -930,7 +981,7 @@ class Pixelmap:
         smooth (bool)  : apply median filter for smoothing rgb colors (each r,g,b dimension is smoothed separately)
         mf_size (int)  : size of median filter kernel for smoothing. default is 1 
         ellipsoid (bool) : set symmetry to one of a triaxial ellipsoid (orthorombic, mmm).
-                           For ipf color map of strain stress principal components orientation
+                           For ipf color map of strain-stress principal components orientation
         save (bool)    : save plot (default is False)
         hide_cbar (bool) : hide colorbar from plot (delault is False)
         out (bool)     : return fig output (default is False)
